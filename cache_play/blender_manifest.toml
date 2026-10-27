@@ -1,0 +1,19 @@
+schema_version = "1.0.0"
+
+id = "cache_play"
+version = "0.2.19"
+name = "Cache Play"
+tagline = "After Effects style cached preview for the 3D Viewport"
+maintainer = "Zeus Animation Studio"
+type = "add-on"
+
+tags = ["Animation", "3D View"]
+
+blender_version_min = "5.1.0"
+
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+
+[permissions]
+files = "Cache preview frames on disk; count feature use for zeploy"

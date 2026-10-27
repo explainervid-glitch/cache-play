@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cache Play Flow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f6f5f1;
+    --panel: #ffffff;
+    --ink: #1d1d1b;
+    --muted: #66645e;
+    --line: #d9d6cc;
+    --arrow: #9a978d;
+    --accent: #e87a2c;      /* Blender orange */
+    --accent-soft: #fdeee2;
+    --ram: #2f9e5b;         /* AE green bar */
+    --ram-soft: #e3f4ea;
+    --disk: #2f6fd1;        /* AE blue bar */
+    --disk-soft: #e3ecfb;
+    --bad: #c8432f;
+    --bad-soft: #fbe6e2;
+    --idle: #8a5cc7;
+    --idle-soft: #efe7fa;
+    --shadow: 0 1px 2px rgba(0,0,0,.05), 0 4px 14px rgba(0,0,0,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #17171a; --panel: #212125; --ink: #ecebe6; --muted: #a3a19a;
+      --line: #35353b; --arrow: #6d6b66; --accent: #f08f45; --accent-soft: #3a2a1e;
+      --ram: #4cc27d; --ram-soft: #1d3326; --disk: #5b93ea; --disk-soft: #1c2840;
+      --bad: #e56a55; --bad-soft: #3a2220; --idle: #ad85e6; --idle-soft: #2c2340;
+      --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #17171a; --panel: #212125; --ink: #ecebe6; --muted: #a3a19a;
+    --line: #35353b; --arrow: #6d6b66; --accent: #f08f45; --accent-soft: #3a2a1e;
+    --ram: #4cc27d; --ram-soft: #1d3326; --disk: #5b93ea; --disk-soft: #1c2840;
+    --bad: #e56a55; --bad-soft: #3a2220; --idle: #ad85e6; --idle-soft: #2c2340;
+    --shadow: none;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: Inter, system-ui, sans-serif; font-size: 16px; line-height: 1.55;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 40px 16px 80px; }
+  header .kicker { color: var(--accent); font-weight: 600; letter-spacing: .08em; text-transform: uppercase; font-size: 13px; }
+  h1 { font-size: clamp(28px, 5vw, 42px); line-height: 1.15; margin: 6px 0 10px; letter-spacing: -.02em; }
+  header p { color: var(--muted); max-width: 680px; margin: 0; font-size: 17px; }
+  h2 { font-size: 22px; margin: 56px 0 6px; letter-spacing: -.01em; display: flex; align-items: center; gap: 10px; }
+  h2 .num { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--ink); color: var(--bg); font-size: 15px; flex: none; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+
+  /* Flow nodes */
+  .flow { display: flex; flex-direction: column; align-items: center; }
+  .node {
+    background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px;
+    padding: 14px 18px; width: 100%; max-width: 560px; box-shadow: var(--shadow);
+  }
+  .node .t { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .node .d { color: var(--muted); font-size: 15px; margin-top: 2px; }
+  .tag { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; padding: 2px 8px; border-radius: 99px; }
+  .node.start { border-color: var(--accent); background: var(--accent-soft); }
+  .node.start .tag { background: var(--accent); color: #fff; }
+  .node.bad { border-color: var(--bad); background: var(--bad-soft); }
+  .node.bad .tag { background: var(--bad); color: #fff; }
+  .node.good { border-color: var(--ram); background: var(--ram-soft); }
+  .node.good .tag { background: var(--ram); color: #fff; }
+  .node.ram { border-color: var(--ram); }
+  .node.disk { border-color: var(--disk); }
+  .node.idle { border-color: var(--idle); background: var(--idle-soft); }
+  .node.idle .tag { background: var(--idle); color: #fff; }
+
+  .arrow { width: 2px; height: 30px; background: var(--arrow); position: relative; margin: 2px 0 8px; }
+  .arrow::after { content: ""; position: absolute; left: 50%; bottom: -7px; transform: translateX(-50%);
+    border: 6px solid transparent; border-top: 8px solid var(--arrow); border-bottom: 0; }
+  .arrow .lbl { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); white-space: nowrap;
+    font-size: 13px; color: var(--muted); font-style: italic; }
+
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; width: 100%; max-width: 760px; }
+  .split .node { max-width: none; }
+  .split-label { font-size: 13px; color: var(--muted); text-align: center; margin: -2px 0 8px; }
+
+  .loopback { margin-top: 14px; width: 100%; max-width: 560px; border: 2px dashed var(--arrow); border-radius: 14px;
+    padding: 10px 14px; font-size: 14px; color: var(--muted); text-align: center; }
+
+  /* Problem vs idea */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 20px; box-shadow: var(--shadow); }
+  .card h3 { margin: 0 0 12px; font-size: 17px; }
+  .card.problem h3 { color: var(--bad); }
+  .card.idea h3 { color: var(--ram); }
+  .ticks { display: flex; gap: 4px; align-items: flex-end; height: 70px; margin: 14px 0 8px; }
+  .ticks span { flex: 1; border-radius: 4px 4px 0 0; }
+  .problem .ticks span { background: var(--bad); opacity: .8; }
+  .idea .ticks span { background: var(--ram); opacity: .85; height: 40%; }
+  .ticks-cap { font-size: 13px; color: var(--muted); }
+
+  /* Timeline bar */
+  .timeline { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; box-shadow: var(--shadow); }
+  .bar { display: flex; height: 18px; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
+  .bar div { height: 100%; }
+  .legend { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 12px; font-size: 14px; }
+  .legend i { display: inline-block; width: 14px; height: 14px; border-radius: 4px; vertical-align: -2px; margin-right: 6px; border: 1px solid var(--line); }
+
+  /* Tables / lists */
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 14px; overflow: hidden; border: 1px solid var(--line); font-size: 15px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  .ok { color: var(--ram); font-weight: 600; }
+  .warn { color: var(--accent); font-weight: 600; }
+  .no { color: var(--bad); font-weight: 600; }
+
+  .phases { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .phase { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; box-shadow: var(--shadow); }
+  .phase .v { font-family: "JetBrains Mono", monospace; color: var(--accent); font-size: 14px; }
+  .phase h4 { margin: 4px 0 6px; font-size: 16px; }
+  .phase p { margin: 0; font-size: 14.5px; color: var(--muted); }
+
+  .glossary { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .g { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+  .g b { display: block; }
+  .g span { color: var(--muted); font-size: 14.5px; }
+
+  .note { background: var(--accent-soft); border-left: 4px solid var(--accent); padding: 12px 16px; border-radius: 0 10px 10px 0; font-size: 15px; margin-top: 16px; }
+
+  .theme-btn { position: fixed; top: 14px; right: 14px; background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 99px; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+
+  @media (max-width: 680px) {
+    .compare, .split, .phases, .glossary { grid-template-columns: 1fr; }
+    .arrow .lbl { white-space: normal; width: 150px; line-height: 1.25; }
+    th, td { padding: 8px 10px; }
+  }
+</style>
+</head>
+<body>
+<button class="theme-btn" id="themeBtn" aria-label="Switch light or dark">◐ Theme</button>
+<div class="wrap">
+
+  <header>
+    <div class="kicker">Blender add-on idea · Cache Play</div>
+    <h1>Make each frame once,<br>then play the pictures smoothly</h1>
+    <p>A plain-language map of how the add-on would give Blender a smooth "RAM Preview", like After Effects, instead of the jumpy live playback we get today.</p>
+  </header>
+
+  <!-- 1. Problem vs idea -->
+  <h2><span class="num">1</span>Why playback is jumpy today</h2>
+  <p class="sub">The short version of the problem, and the idea that fixes it.</p>
+  <div class="compare">
+    <div class="card problem">
+      <h3>Blender today: build every frame live</h3>
+      Every time you press Play, Blender rebuilds the whole scene for each frame (moves the bones, bends the meshes, runs the node setups) and then draws it. Some frames are easy, some are heavy, so each one takes a different amount of time.
+      <div class="ticks" aria-hidden="true">
+        <span style="height:30%"></span><span style="height:85%"></span><span style="height:40%"></span><span style="height:100%"></span><span style="height:35%"></span><span style="height:70%"></span><span style="height:25%"></span><span style="height:90%"></span><span style="height:45%"></span><span style="height:60%"></span>
+      </div>
+      <div class="ticks-cap">Time spent per frame: uneven → the motion looks choppy, even with Frame Dropping on.</div>
+    </div>
+    <div class="card idea">
+      <h3>Cache Play: build once, then just show pictures</h3>
+      First, the add-on takes a picture of every frame (it can take as long as it needs, nobody is watching). Then it plays those pictures back with a stopwatch at exactly your frame rate. Showing a picture always takes the same tiny amount of time.
+      <div class="ticks" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+      </div>
+      <div class="ticks-cap">Time spent per frame: always the same → perfectly smooth, like AE's green-bar preview.</div>
+    </div>
+  </div>
+
+  <!-- 2. Main flow -->
+  <h2><span class="num">2</span>The main flow</h2>
+  <p class="sub">What happens from the moment you ask for a preview to smooth playback.</p>
+
+  <div class="flow">
+    <div class="node start">
+      <div class="t"><span class="tag">Start</span> You press "Cache Preview"</div>
+      <div class="d">Or the add-on starts by itself when you stop working for a few seconds (see step 4).</div>
+    </div>
+    <div class="arrow"></div>
+
+    <div class="node">
+      <div class="t">Go to the next frame that has no picture yet</div>
+      <div class="d">Frames that already have a good picture are skipped.</div>
+    </div>
+    <div class="arrow"></div>
+
+    <div class="node">
+      <div class="t">Blender builds that frame and takes a picture of the viewport</div>
+      <div class="d">Exactly what you see in the viewport (Solid or Material Preview / EEVEE), at the size you picked: Full (max 1080p), Half, Third or Quarter. Slow frames are fine here. Speed doesn't matter yet.</div>
+    </div>
+    <div class="arrow"><span class="lbl">where does the picture go?</span></div>
+
+    <div class="split">
+      <div class="node ram">
+        <div class="t" style="color:var(--ram)">● Quick memory (RAM)</div>
+        <div class="d">Super fast to read, but small. Holds the frames near where you're watching. Shown as a <b style="color:var(--ram)">green</b> bar.</div>
+      </div>
+      <div class="node disk">
+        <div class="t" style="color:var(--disk)">● Drive (SSD)</div>
+        <div class="d">Big and keeps the pictures even after you close Blender. Every picture is also saved here. Shown as a <b style="color:var(--disk)">blue</b> bar.</div>
+      </div>
+    </div>
+    <div class="split-label">Same idea as After Effects 25.2+: memory is the fast shelf, the drive is the big warehouse.</div>
+    <div class="arrow"><span class="lbl">all frames have a picture</span></div>
+
+    <div class="node good">
+      <div class="t"><span class="tag">Play</span> The add-on's own stopwatch ticks exactly 24 times a second</div>
+      <div class="d">On each tick it shows the next picture. Blender does <b>not</b> rebuild the scene while playing. That's the whole trick.</div>
+    </div>
+    <div class="arrow"><span class="lbl">at the same time…</span></div>
+
+    <div class="node disk">
+      <div class="t">A helper reads ahead from the drive</div>
+      <div class="d">While you watch, a helper quietly loads the next few pictures from the drive into quick memory, so the next picture is always ready on time. This is why the preview can be much longer than your RAM.</div>
+    </div>
+    <div class="arrow"></div>
+
+    <div class="node">
+      <div class="t">Sound plays along, locked to the same stopwatch</div>
+      <div class="d">So lip-sync and music beats stay correct.</div>
+    </div>
+  </div>
+
+  <!-- 3. Timeline -->
+  <h2><span class="num">3</span>What you see on the timeline</h2>
+  <p class="sub">A colored bar shows which frames are ready, just like the bars above the AE timeline.</p>
+  <div class="timeline">
+    <div class="bar" aria-label="Example cache bar">
+      <div style="flex:30;background:var(--ram)"></div>
+      <div style="flex:35;background:var(--disk)"></div>
+      <div style="flex:12;background:var(--bg)"></div>
+      <div style="flex:23;background:var(--disk)"></div>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--ram)"></i>Ready in quick memory</span>
+      <span><i style="background:var(--disk)"></i>Ready on the drive</span>
+      <span><i style="background:var(--bg)"></i>Empty: needs a new picture (you changed something there)</span>
+    </div>
+  </div>
+
+  <!-- 4. Edits -->
+  <h2><span class="num">4</span>When you change something</h2>
+  <p class="sub">Old pictures become wrong after an edit. The add-on throws away only the ones that changed.</p>
+
+  <div class="flow">
+    <div class="node start">
+      <div class="t"><span class="tag">Edit</span> You move a key, change a material, tweak a node…</div>
+    </div>
+    <div class="arrow"></div>
+    <div class="node">
+      <div class="t">The add-on notices the change</div>
+      <div class="d">Blender tells add-ons "something changed, and here's what". We listen for that.</div>
+    </div>
+    <div class="arrow"><span class="lbl">which frames are now wrong?</span></div>
+    <div class="split">
+      <div class="node">
+        <div class="t">Only some frames</div>
+        <div class="d">You moved keys between frame 40 and 60 → only those frames are marked "out of date".</div>
+      </div>
+      <div class="node bad">
+        <div class="t"><span class="tag">All</span> Every frame</div>
+        <div class="d">You changed a material, the lighting, or <b>moved the viewport view</b> → every picture is wrong. Tip: preview from the camera so orbiting doesn't wipe the cache.</div>
+      </div>
+    </div>
+    <div class="arrow"></div>
+    <div class="node">
+      <div class="t">Those frames turn empty on the timeline bar</div>
+      <div class="d">Everything else stays green or blue and is reused.</div>
+    </div>
+    <div class="arrow"></div>
+    <div class="node idle">
+      <div class="t"><span class="tag">Idle</span> When you pause for a few seconds, the add-on remakes the empty frames</div>
+      <div class="d">Like AE's "Cache Frames When Idle". As soon as you touch the mouse again it stops and lets you work.</div>
+    </div>
+    <div class="loopback">↺ back to the main flow: next time you press Play, everything is ready</div>
+  </div>
+
+  <!-- 5. Tomorrow -->
+  <h2><span class="num">5</span>Opening the file again tomorrow</h2>
+  <p class="sub">Pictures saved on the drive can be reused, but only if we're sure they're still correct.</p>
+
+  <div class="flow">
+    <div class="node start">
+      <div class="t"><span class="tag">Open</span> You open the .blend file</div>
+    </div>
+    <div class="arrow"></div>
+    <div class="node">
+      <div class="t">Each saved picture has a "name tag"</div>
+      <div class="d">Which file · which frame · which camera / view · what size · which viewport mode · an edit number that goes up every time you change something · when linked files (rigs, props) last changed.</div>
+    </div>
+    <div class="arrow"><span class="lbl">does the name tag still match?</span></div>
+    <div class="split">
+      <div class="node good">
+        <div class="t"><span class="tag">Yes</span> Reuse the picture</div>
+        <div class="d">Instant blue bar. No waiting.</div>
+      </div>
+      <div class="node bad">
+        <div class="t"><span class="tag">No</span> Remake it</div>
+        <div class="d">The frame shows as empty and gets a new picture.</div>
+      </div>
+    </div>
+  </div>
+  <div class="note"><b>Safety button:</b> a "Clear Cache" button wipes everything, like AE's Purge. Blender removed its own drive cache in version 4.5 because it sometimes showed old, wrong pictures. The name tags are how we avoid that, and the clear button is the backup plan.</div>
+
+  <!-- 6. Limits -->
+  <h2><span class="num">6</span>Limits to know about</h2>
+  <p class="sub">Honest numbers, so there are no surprises.</p>
+
+  <table>
+    <thead><tr><th>Preview size option</th><th>Picture size</th><th>Memory for 10 seconds @ 24fps</th><th>Drive speed needed</th></tr></thead>
+    <tbody>
+      <tr><td><b>Full</b></td><td>1920 × 1080</td><td>about 2 GB</td><td>about 200 MB/s <span class="ok">· any SSD</span></td></tr>
+      <tr><td><b>Half</b></td><td>960 × 540</td><td>about 0.5 GB</td><td>about 50 MB/s <span class="ok">· easy</span></td></tr>
+      <tr><td><b>Third</b></td><td>640 × 360</td><td>about 0.22 GB</td><td>about 22 MB/s <span class="ok">· easy</span></td></tr>
+      <tr><td><b>Quarter</b></td><td>480 × 270</td><td>about 0.12 GB</td><td>about 12 MB/s <span class="ok">· even a hard drive</span></td></tr>
+    </tbody>
+  </table>
+  <div class="note"><b>Full is capped at 1080p.</b> If your project is bigger (for example 4K), "Full" still makes 1080p pictures. Half, Third and Quarter are worked out from that capped size. Sizes above are for a 16:9 project; other shapes (vertical, square) keep their shape and stay within 1920 × 1080.</div>
+
+  <table style="margin-top:14px">
+    <tbody>
+      <tr><td><b>Making the pictures takes time</b></td><td>Blender is busy while it makes them. We do it in small chunks with a progress bar, and stop the moment you start working.</td></tr>
+      <tr><td><b>Pictures are of one view</b></td><td>Orbiting or zooming the viewport means new pictures. Best used from the camera view.</td></tr>
+      <tr><td><b>Simulations</b></td><td>Cloth, smoke and simulation nodes depend on earlier frames. Bake them first, or a change early in the shot marks every later frame out of date.</td></tr>
+      <tr><td><b>Cycles</b></td><td>Not covered. The pictures come from the viewport (Solid, Material Preview, EEVEE).</td></tr>
+    </tbody>
+  </table>
+
+  <!-- 7. Plan -->
+  <h2><span class="num">7</span>Build it in three steps</h2>
+  <p class="sub">Each step works on its own, so we can test early.</p>
+  <div class="phases">
+    <div class="phase"><div class="v">v1</div><h4>Smooth playback from memory</h4><p>Take pictures, keep them in quick memory, play with our own stopwatch. Proves the main idea on a heavy scene.</p></div>
+    <div class="phase"><div class="v">v2</div><h4>Drive + read-ahead helper</h4><p>Save pictures to the drive and stream them back, so previews can be longer than your RAM. Add the timeline bar and idle caching.</p></div>
+    <div class="phase"><div class="v">v3</div><h4>Remember between sessions</h4><p>Name tags, smart "only these frames changed" detection, cache size limit and the Clear Cache button.</p></div>
+  </div>
+
+  <!-- 8. Glossary -->
+  <h2><span class="num">8</span>Word list</h2>
+  <p class="sub">Terms you might see later in the code or in our chats.</p>
+  <div class="glossary">
+    <div class="g"><b>Cache</b><span>A stash of things already made, so we don't make them again.</span></div>
+    <div class="g"><b>RAM (quick memory)</b><span>The computer's fast short-term memory. Fast, but limited and emptied when you close Blender.</span></div>
+    <div class="g"><b>SSD / NVMe (drive)</b><span>Where files live. Bigger and permanent. NVMe is the fastest kind of SSD.</span></div>
+    <div class="g"><b>Evaluate (rebuild)</b><span>Blender working out where everything is on a frame: bones, modifiers, nodes. This is the slow, uneven part.</span></div>
+    <div class="g"><b>Depsgraph</b><span>Blender's internal "to-do list" for rebuilding the scene. It also tells us what changed after an edit.</span></div>
+    <div class="g"><b>Invalidate</b><span>Marking a saved picture as "out of date" so it gets remade.</span></div>
+    <div class="g"><b>Read-ahead / streaming</b><span>Loading the next pictures from the drive just before they're needed.</span></div>
+    <div class="g"><b>Offscreen render</b><span>Drawing the viewport into a hidden picture instead of onto your screen.</span></div>
+    <div class="g"><b>GPU (graphics card)</b><span>Draws the viewport. It has its own memory (VRAM) where pictures can also be kept.</span></div>
+    <div class="g"><b>Frame dropping</b><span>Blender skipping frames to keep the timing right. Keeps the length correct but makes motion choppy.</span></div>
+  </div>
+
+</div>
+<script>
+  (function () {
+    var btn = document.getElementById('themeBtn');
+    var root = document.documentElement;
+    try { var saved = localStorage.getItem('cacheplay-theme'); if (saved) root.setAttribute('data-theme', saved); } catch (e) {}
+    btn.addEventListener('click', function () {
+      var cur = root.getAttribute('data-theme');
+      var dark = cur ? cur === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+      var next = dark ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+      try { localStorage.setItem('cacheplay-theme', next); } catch (e) {}
+    });
+  })();
+</script>
+</body>
+</html>
