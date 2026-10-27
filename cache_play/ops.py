@@ -108,6 +108,8 @@ class CACHEPLAY_OT_preview(bpy.types.Operator):
             return {'CANCELLED'}
         if context.screen.is_animation_playing:
             bpy.ops.screen.animation_cancel(restore_frame=False)
+        # Cache Mode puts the viewport back the way it was when it ends (see _finish).
+        self._saved_view = capture.save_view(space) if self.cache_mode else None
         if capture.ensure_camera_view(space):
             area.tag_redraw()
 
@@ -481,8 +483,20 @@ class CACHEPLAY_OT_preview(bpy.types.Operator):
         if jump_to is not None and jump_to != scene.frame_current:
             state.suppress(0.5)
             scene.frame_set(jump_to)
+        if self._saved_view is not None:
+            self._restore_view(context)
         self._area.tag_redraw()
         store.tag_time_editors()
+
+    def _restore_view(self, context):
+        """Back to the view from before Cache Mode, if the viewport still exists."""
+        saved, self._saved_view = self._saved_view, None
+        pointer = self._area.as_pointer()
+        for window in context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.as_pointer() == pointer and area.type == 'VIEW_3D':
+                    capture.restore_view(area.spaces.active, saved)
+                    return
 
 
 class CACHEPLAY_OT_clear(bpy.types.Operator):
@@ -556,12 +570,14 @@ class CACHEPLAY_OT_settings(bpy.types.Operator):
 
 classes = (CACHEPLAY_OT_preview, CACHEPLAY_OT_clear, CACHEPLAY_OT_cache_mode, CACHEPLAY_OT_settings)
 
-# Default shortcuts. Blender 5.1/5.2's default keymap leaves F5-F8 free (only Shift+F5-F8
-# are taken, for switching editors). They live in the Window keymap so they work in any
-# editor; change them in the add-on preferences.
+# Default shortcuts. Blender 5.1/5.2's default keymap leaves F5-F8 free, also with Ctrl, Alt
+# or Ctrl+Shift (only Shift+F5-F8 are taken, for switching editors). They live in the Window
+# keymap so they work in any editor; change them in the add-on preferences. Clearing needs
+# two keys so it is not hit by accident.
 SHORTCUTS = (
-    ("cacheplay.preview", 'F5'),
-    ("cacheplay.cache_mode", 'F6'),
+    ("cacheplay.preview", 'F5', {}),
+    ("cacheplay.cache_mode", 'F6', {}),
+    ("cacheplay.clear", 'F5', {"ctrl": True}),
 )
 _keymap_items = []
 
@@ -574,7 +590,7 @@ def draw_keymap(layout, context):
     if keymap is None:
         return
     col = layout.column()
-    for idname, _key in SHORTCUTS:
+    for idname, _key, _modifiers in SHORTCUTS:
         item = next((kmi for kmi in keymap.keymap_items if kmi.idname == idname), None)
         if item is not None:
             rna_keymap_ui.draw_kmi([], keyconfig, keymap, item, col, 0)
@@ -586,8 +602,8 @@ def register():
     keyconfig = bpy.context.window_manager.keyconfigs.addon
     if keyconfig is not None:
         keymap = keyconfig.keymaps.new(name="Window", space_type='EMPTY')
-        for idname, key in SHORTCUTS:
-            _keymap_items.append((keymap, keymap.keymap_items.new(idname, key, 'PRESS')))
+        for idname, key, modifiers in SHORTCUTS:
+            _keymap_items.append((keymap, keymap.keymap_items.new(idname, key, 'PRESS', **modifiers)))
 
 
 def unregister():

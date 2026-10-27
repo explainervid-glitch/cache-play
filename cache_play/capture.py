@@ -121,6 +121,23 @@ def ensure_camera_view(space):
     return False
 
 
+_VIEW_ATTRS = ("view_perspective", "view_location", "view_rotation", "view_distance",
+               "view_camera_zoom", "view_camera_offset")
+
+
+def save_view(space):
+    """The viewport's view (camera or free, where it looks, zoom), for restore_view()."""
+    rv3d = space.region_3d
+    return {name: getattr(rv3d, name).copy() if hasattr(getattr(rv3d, name), "copy") else getattr(rv3d, name)
+            for name in _VIEW_ATTRS}
+
+
+def restore_view(space, saved):
+    rv3d = space.region_3d
+    for name, value in saved.items():
+        setattr(rv3d, name, value)
+
+
 def capture_size(scene, preset):
     render = scene.render
     return store.preview_size(render.resolution_x, render.resolution_y, preset)

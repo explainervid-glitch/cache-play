@@ -116,6 +116,43 @@ def s_check_free_view():
           and main_view().spaces.active.region_3d.view_perspective == 'CAMERA',
           {"before": s_free_view.before, "after": (count(), cache.generation)})
     esc()
+
+
+def s_check_free_view_restored():
+    check("Esc puts the free view back",
+          main_view().spaces.active.region_3d.view_perspective == 'PERSP',
+          main_view().spaces.active.region_3d.view_perspective)
+
+
+def _view_state():
+    rv3d = main_view().spaces.active.region_3d
+    return (rv3d.view_perspective, tuple(round(v, 4) for v in rv3d.view_location),
+            tuple(round(v, 4) for v in rv3d.view_rotation), round(rv3d.view_distance, 4))
+
+
+def s_orbit_setup():
+    rv3d = main_view().spaces.active.region_3d
+    rv3d.view_perspective = 'PERSP'
+    rv3d.view_location = (1.0, 2.0, 0.5)
+    rv3d.view_rotation = (0.9, 0.3, 0.1, 0.3)
+    rv3d.view_distance = 9.0
+    s_orbit_setup.before = _view_state()
+    call(bpy.ops.cacheplay.cache_mode, main_view())
+
+
+def s_orbit_inside():
+    rv3d = main_view().spaces.active.region_3d
+    s_orbit_inside.camera = rv3d.view_perspective
+    rv3d.view_perspective = 'PERSP'  # look around while in Cache Mode
+    rv3d.view_rotation = (0.5, 0.5, 0.5, 0.5)
+    rv3d.view_distance = 20.0
+    call(bpy.ops.cacheplay.cache_mode, main_view())  # toggle off
+
+
+def s_check_orbit_restored():
+    check("toggle off restores the exact view from before Cache Mode, even after looking around",
+          s_orbit_inside.camera == 'CAMERA' and not player.state.active and _view_state() == s_orbit_setup.before,
+          {"in_cache_mode": s_orbit_inside.camera, "before": s_orbit_setup.before, "after": _view_state()})
     main_view().spaces.active.region_3d.view_perspective = 'CAMERA'
 
 
@@ -161,7 +198,8 @@ STEPS = [
     (1.0, setup), (0.5, s_fill),
     (3.0, s_cache_mode_other_view), (0.5, s_check_other_view),
     (0.5, s_cache_mode_from_timeline), (0.5, s_check_timeline),
-    (0.5, s_free_view), (0.5, s_check_free_view),
+    (0.5, s_free_view), (0.5, s_check_free_view), (0.5, s_check_free_view_restored),
+    (0.3, s_orbit_setup), (0.5, s_orbit_inside), (0.6, s_check_orbit_restored),
     (0.5, s_partial), (0.3, s_partial_cache_mode), (0.5, s_check_partial),
     (0.5, s_empty), (3.0, s_check_empty),
     (0.5, s_finish),

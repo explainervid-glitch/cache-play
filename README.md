@@ -9,7 +9,7 @@ v2 adds a disk cache (like After Effects 25.2+ "Preview from Disk Cache"): every
 ## Install
 
 1. In Blender: Edit > Preferences > Get Extensions > the drop-down arrow (top right) > **Install from Disk…**
-2. Pick `dist/cache_play-0.2.19.zip` (it replaces an older version). Blender asks to allow file access: that is the disk cache, and the feature-use counts for zeploy (see below).
+2. Pick `dist/cache_play-0.2.20.zip` (it replaces an older version). Blender asks to allow file access: that is the disk cache, and the feature-use counts for zeploy (see below).
 3. The panel is in the 3D Viewport sidebar (press N) under the **Cache Play** tab.
 
 ### While developing: link instead of installing
@@ -66,7 +66,7 @@ Shortcut: **F5** (change it in the add-on preferences).
 - **Drag** anywhere in the Timeline, or in the frame-number bar at the top of a Dope Sheet, Graph Editor or NLA Editor, to move the cache playhead. Clicks lower down in those editors still select keys as usual.
 - **Space**: play / pause from the cache playhead. **← →**: step one frame. **Shift ← →**: first / last frame.
 - Everything else keeps working: other clicks and shortcuts go to Blender as normal.
-- **Esc** or the toggle turns it off. Blender's playhead is exactly where it was.
+- **Esc** or the toggle turns it off. Blender's playhead is exactly where it was, and the viewport goes back to the view it had before Cache Mode (free view, camera view, zoom), even if you looked around meanwhile.
 - If an edit clears the cache, Cache Mode turns itself off.
 
 Difference from **Cache & Play**: Cache & Play stops on any key or click and then moves Blender's playhead to the frame you stopped on (if Move Playhead on Stop is on). Cache Mode stays on while you work and never moves Blender's playhead.
@@ -109,7 +109,7 @@ With the defaults, anything you do in Blender, even just moving the mouse over i
 
 It adapts to the viewport's width: on narrow viewports it first drops the count, then Clear, Settings and Export (▶ and 🎞 always stay). While Cache & Play or Cache Mode runs, a small label sits just above the pill, e.g. **CACHE MODE** 12 · scene 0 · paused (the cache frame, then Blender's own frame). On narrow viewports it shortens to the frame number. Hover a button for its name; hovering never changes the mouse cursor. The toolbar stays visible over the cached picture in Cache Mode. It hides with the viewport's Show Gizmos toggle (the arrow icon in the viewport header).
 
-**Shortcuts**: **F5** = Cache & Play, **F6** = Cache Mode (press again to leave). Blender 5.1/5.2 leave F5–F8 unused by default. They work in any editor. Change them in Preferences > Add-ons > Cache Play > Shortcuts.
+**Shortcuts**: **F5** = Cache & Play, **F6** = Cache Mode (press again to leave), **Ctrl+F5** = Clear Cache (two keys, so it is not pressed by accident). Blender 5.1/5.2 leave F5–F8 unused by default, also with Ctrl, Alt or Ctrl+Shift (only Shift+F5–F8 are taken). They work in any editor. Change them in Preferences > Add-ons > Cache Play > Shortcuts.
 
 **Timeline bar** (optional: Preferences > Toolbar > Timeline Header or Both): in the Timeline header between Blender's **Playback** drop-down and the Auto Keying button, left to right:
 
@@ -137,7 +137,7 @@ Add-on preferences:
 - **Idle Delay** (3 s) and **Idle Activity** (see Cache When Idle), **Move Playhead on Stop** (on).
 - **Fast GPU Caching** (on): the speed-ups below (graphics card packs the pixels, overlapped steps). Off = the older, slower way, as a fallback if cached frames ever look wrong with a graphics driver. Both give identical pictures in tests.
 - **Toolbar**: 3D Viewport (default), Timeline Header, or Both.
-- **Shortcuts**: F5 and F6, editable.
+- **Shortcuts**: F5, F6 and Ctrl+F5, editable.
 
 Size per frame: Full 1080p ≈ 8 MB, Half ≈ 2 MB, Quarter ≈ 0.5 MB. 10 seconds at 24 fps is about 2 GB at Full, 0.5 GB at Half.
 
@@ -207,7 +207,7 @@ Automatic tests, all passing on Blender 5.1.1 and 5.2.0:
 - `test_controls.py`: 17 of 17. Keys, clicks, pause, step, stop, Esc while caching, refill on size change.
 - `test_idle.py`: 10 of 10. Starts by itself; playhead never moves; pauses on input; finishes the range; saves to disk; rebuilds after an edit; keeps working in a free view without changing it. 
 - `test_cache_mode.py`: 19 of 19. Enter (with caching), drag in the Timeline and in the Graph Editor frame bar, a lower Graph Editor click left to Blender, play, click elsewhere, step, jump, exit by toggle and by Esc, edit clears. Blender's playhead stayed on its frame throughout. These tests send events straight to Cache Play; a real mouse drag over the Timeline has not been tested by hand yet.
-- `test_cache_mode_reuse.py`: 6 of 6. Cache Mode reuses the cache when pressed in another viewport, in the Timeline header, from a free view (switching back to camera), and with a partial cache; it caches only when the cache is empty.
+- `test_cache_mode_reuse.py`: 8 of 8. Cache Mode reuses the cache when pressed in another viewport, in the Timeline header, from a free view (switching to camera, and back to the exact free view on exit by Esc or toggle), and with a partial cache; it caches only when the cache is empty.
 - `test_idle_cache_mode.py`: 10 of 10. Idle caching fills a partial cache while Cache Mode is open and paused; new frames become scrubbable; Blender's playhead stays put; the status line shows "Caching frame …" and "Waiting …"; by default moving the mouse counts and other programs don't, unticking Mouse Movement stops it counting, and unticking Edits stops frame changes counting. (Both idle tests replace the keyboard/mouse check with a value they control, so they pass while the computer is in use.)
 
 v1 results (Blender 5.1 and 5.2, OpenGL and Vulkan, 0 dropped frames, ≤ 1 ms jitter) still hold.
