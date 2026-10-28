@@ -1,0 +1,4 @@
+# Python bytecode Blender writes next to the add-on
+__pycache__/
+*.pyc
+dist/
