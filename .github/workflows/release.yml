@@ -1,0 +1,78 @@
+# Tag and release automatically: when a push to main carries a version in
+# cache_play/blender_manifest.toml that has no tag yet, this builds cache_play-<version>.zip,
+# creates the tag v<version> and publishes a GitHub release with the zip attached and the
+# commit messages since the previous release as notes. Pushes that keep the version do nothing.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # all history and tags, for the notes
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Read the version
+        id: version
+        run: |
+          VERSION=$(python -c "import tomllib; print(tomllib.load(open('cache_play/blender_manifest.toml','rb'))['version'])")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "Tag v$VERSION exists already: nothing to release."
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the extension zip
+        if: steps.version.outputs.new == 'true'
+        id: build
+        run: echo "zip=$(python tools/build_extension_zip.py dist)" >> "$GITHUB_OUTPUT"
+
+      - name: Write release notes
+        if: steps.version.outputs.new == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          PREVIOUS=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
+          {
+            echo "Install: Blender > Preferences > Get Extensions > Install from Disk, pick \`cache_play-$VERSION.zip\`. Needs Blender 5.1 or newer."
+            echo
+            if [ -n "$PREVIOUS" ]; then
+              echo "## Changes since $PREVIOUS"
+              RANGE="$PREVIOUS..HEAD"
+            else
+              echo "## Changes"
+              RANGE="HEAD"
+            fi
+            echo
+            git log "$RANGE" --no-merges --pretty='format:- %s' | grep -v -i '^- *chore' || true
+          } > notes.md
+          cat notes.md
+
+      - name: Tag and publish the release
+        if: steps.version.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "v$VERSION" "${{ steps.build.outputs.zip }}" \
+            --target "$GITHUB_SHA" \
+            --title "Cache Play $VERSION" \
+            --notes-file notes.md

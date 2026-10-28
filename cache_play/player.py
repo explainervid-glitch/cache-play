@@ -53,6 +53,8 @@ class PlayerState:
         self.active = False    # playing or paused; the cached picture covers the viewport
         self.filling = False   # the cache is being filled
         self.idle_step = False  # idle caching is rendering a frame right now
+        self.capturing = False  # Cache & Play is caching a frame while it plays
+        self.caching = False    # the frame shown was just cached (status label)
         self.paused = False
         self.cache_mode = False       # reviewing the cache: clicks pass through, Timeline drags scrub
         self.exit_requested = False   # the Cache Mode toggle asks the running operator to stop
@@ -77,7 +79,8 @@ class PlayerState:
         Playback never changes the scene frame, so it does not count: an edit made
         during Cache Mode must still clear the cache.
         """
-        return self.filling or self.idle_step or time.perf_counter() < self.suppress_until
+        return (self.filling or self.idle_step or self.capturing
+                or time.perf_counter() < self.suppress_until)
 
     def suppress(self, seconds):
         self.suppress_until = time.perf_counter() + seconds
@@ -140,6 +143,7 @@ class PlayerState:
         self.paused = False
         self.cache_mode = False
         self.exit_requested = False
+        self.caching = False
         self.frames = []
         self.stats = None
 

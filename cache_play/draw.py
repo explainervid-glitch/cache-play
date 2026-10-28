@@ -138,7 +138,9 @@ def _hud_parts(context, state):
         details = [str(state.frame), f"scene {context.scene.frame_current}"]
     else:
         details = [str(state.frame), f"{state.fps:.4g} fps"]
-    if state.stats is not None and state.stats.dropped:
+    if state.caching:
+        details.append("caching")  # Cache & Play just cached the frame shown
+    elif state.stats is not None and state.stats.dropped:
         details.append(f"{state.stats.dropped} dropped")
     short = [str(state.frame)]
     if state.paused:

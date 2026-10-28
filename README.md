@@ -9,7 +9,7 @@ v2 adds a disk cache (like After Effects 25.2+ "Preview from Disk Cache"): every
 ## Install
 
 1. In Blender: Edit > Preferences > Get Extensions > the drop-down arrow (top right) > **Install from Disk…**
-2. Pick `dist/cache_play-0.3.0.zip` (it replaces an older version). Blender asks to allow file access: that is the disk cache, and the feature-use counts for zeploy (see below).
+2. Pick `dist/cache_play-0.3.1.zip` (it replaces an older version). Blender asks to allow file access: that is the disk cache, and the feature-use counts for zeploy (see below).
 3. The panel is in the 3D Viewport sidebar (press N) under the **Cache Play** tab.
 
 ### While developing: link instead of installing
@@ -34,11 +34,11 @@ To build a zip for other machines:
 ## Use
 
 1. Cache Play always caches **through the scene camera**. If the viewport is not in camera view, Cache & Play, Cache Only and Cache Mode switch it to camera view first (like Numpad 0). The viewport only decides the look (shading, overlays). Zooming, panning or even orbiting the viewport afterwards never makes the cache out of date. No scene camera means no caching: Cache Play says so.
-2. Press **Cache & Play**. Like After Effects, it works through the range (the preview range if one is set) **from the playhead** (from the start if the playhead is on the last frame or outside the range):
-   - Frames already cached play straight away, in real time.
-   - When playback reaches a frame that is not cached, it caches the missing stretch from there (up to the next cached frame or the end of the range; you see the frames as they are calculated), then plays on from the start of that stretch.
-   - Example: frames 1–56 cached, playhead on 10, range 1–120. Playback starts at 10 at once; at 56 it caches 57–120, then plays from 57, and loops to 1 if Loop is on.
-   - With nothing cached it caches from the playhead to the end, plays that, and with Loop on caches the start of the range when it gets there.
+2. Press **Cache & Play** (or F5, or Space with the Spacebar option). It plays the range (the preview range if one is set) **from the playhead** (from the start if the playhead is on the last frame or outside the range) and **caches while it plays**: cached frames play in real time; a frame not cached yet is cached when the playhead gets there and shown at once (the status label above the toolbar says "caching"). How it handles those frames follows the scene's own **Sync** setting (Timeline > Playback > Sync), like Blender's playback:
+   - **Play Every Frame**: it waits for each frame, so every frame is shown in order. The first pass runs slower than real time on a heavy scene; once cached, it plays at full speed.
+   - **Frame Dropping** (and **Sync to Audio**): the playhead keeps real speed and skips the frames that go by while one is being cached, like Blender's frame dropping. Each loop caches more of the skipped frames, so after a few loops everything is cached and playback is smooth. With Loop off, one pass leaves gaps; the next play or Cache When Idle fills them.
+   - Example: frames 1–56 cached, playhead on 10, range 1–120. Playback starts at 10 at once; from 57 it caches as it goes.
+   - Unbaked simulations get wrong pictures when the playhead jumps (bake first); Frame Dropping jumps more.
    **Cache Only** still caches everything missing in one go: from the playhead to the end, then the frames before the playhead.
 3. Press **Cache & Play** again later: frames already cached are not drawn again.
 
@@ -231,12 +231,12 @@ Caveat: the frames had just been written, so Windows probably still had them in 
 
 Automatic tests, all passing on Blender 5.1.1 and 5.2.0:
 
-- `test_controls.py`: 18 of 18. Keys, clicks, pause, step, stop, Esc while caching, caching starts at the playhead, refill on size change.
+- `test_controls.py`: 18 of 18. Caches while playing from the playhead, keys, clicks, pause, step, stop, Esc while caching, caching starts at the playhead, refill on size change.
 - `test_idle.py`: 10 of 10. Starts by itself; playhead never moves; pauses on input; finishes the range; saves to disk; rebuilds after an edit; keeps working in a free view without changing it. 
 - `test_cache_mode.py`: 19 of 19. Enter (with caching), drag in the Timeline and in the Graph Editor frame bar, a lower Graph Editor click left to Blender, play, click elsewhere, step, jump, exit by toggle and by Esc, edit clears. Blender's playhead stayed on its frame throughout. These tests send events straight to Cache Play; a real mouse drag over the Timeline has not been tested by hand yet.
 - `test_cache_mode_reuse.py`: 8 of 8. Cache Mode reuses the cache when pressed in another viewport, in the Timeline header, from a free view (switching to camera, and back to the exact free view on exit by Esc or toggle), and with a partial cache; it caches only when the cache is empty.
 - `test_idle_cache_mode.py`: 10 of 10. Idle caching fills a partial cache while Cache Mode is open and paused; new frames become scrubbable; Blender's playhead stays put; the status line shows "Caching frame …" and "Waiting …"; by default moving the mouse counts and other programs don't, unticking Mouse Movement stops it counting, and unticking Edits stops frame changes counting. (Both idle tests replace the keyboard/mouse check with a value they control, so they pass while the computer is in use.)
-- `test_play_through.py`: 7 of 7. Stopping Cache Only leaves the playhead on the last cached frame; with frames 1–56 cached and the playhead on 10, Cache & Play plays at once from 10, caches 57–120 when it reaches 56 and plays on from 57; stopping playback leaves the playhead on the shown frame; Space during a gap stops and keeps the playhead on the last cached frame.
+- `test_play_through.py`: 11 of 11, with each frame change slowed down to act like a heavy scene. Stopping Cache Only leaves the playhead on the last cached frame. Play Every Frame caches every frame in order, never skipping one, and plays on afterwards. With part of the range cached, playback starts at once and caches the rest when it gets there. Frame Dropping (80 ms per frame) keeps real speed: 19 of 48 frames cached in the first pass, all 48 after about 6 s of looping. Esc or Space while caching stops on the frame shown, which is the last one cached.
 - `tests/run_persist.sh` (`test_persist.py`, one Blender start per step): 13 of 13. Cache, quit, reopen: the cache is found and Cache & Play caches nothing; an unsaved edit clears it but leaves the folder, and reopening without saving finds it again; edit + save makes a new cache, and with room for one the oldest is deleted; reopening after the save finds the new one; a .blend with a new date (changed outside) is not trusted; after Save As the new file name finds the cache; Clear All Caches deletes everything.
 
 v1 results (Blender 5.1 and 5.2, OpenGL and Vulkan, 0 dropped frames, ≤ 1 ms jitter) still hold.
@@ -245,8 +245,20 @@ In the everyday Blender 5.2 setup on this machine, another add-on freezes the ma
 
 The panel's **Statistics** section shows these numbers after each playback, so you can check any scene.
 
+## Releases
+
+Releases are made by GitHub, not by hand (`.github/workflows/release.yml`):
+
+1. Change `version` in `cache_play/blender_manifest.toml` (and `bl_info` in `__init__.py`), commit, push to `main`.
+2. GitHub builds `cache_play-<version>.zip`, creates the tag `v<version>` and publishes the release "Cache Play <version>" with the zip attached. The notes list the commit messages since the previous release (commits starting with "chore" are left out) and how to install.
+3. Pushes that keep the same version release nothing. To retry a failed run: Actions > Release > Run workflow.
+
+The zip is built by `tools/build_extension_zip.py` (no Blender needed). It gives the same files as `blender --command extension build`, checked with `extension validate`. Run it locally with any Python 3.11+: `python tools/build_extension_zip.py` writes to `dist/`.
+
 ## Files
 
+- `.github/workflows/release.yml` – automatic tag and release on a new version
+- `tools/build_extension_zip.py` – builds the installable zip
 - `cache_play/` – the add-on (Blender extension package)
   - `capture.py` – draws the viewport into an offscreen picture and reads it back
   - `store.py` – RAM tier, disk tier, writer and reader threads, when the cache is out of date

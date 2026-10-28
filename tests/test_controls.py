@@ -62,9 +62,11 @@ def s_start():
 
 def s_check_playing():
     st = player.state
-    check("fill then play", st.active and store.frame_cache.stats()["frames"] == 48,
-          {"active": st.active, "frames": store.frame_cache.stats()["frames"]})
-    check("starts at current frame", 10 <= st.frame <= 48, st.frame)
+    cached = store.frame_cache.snapshot()[1]
+    check("caches while playing, from the playhead to the end first",
+          st.active and set(range(10, 49)) <= cached,
+          {"active": st.active, "frames": len(cached), "first": min(cached) if cached else None})
+    check("playback runs on from the playhead (wrapping with Loop)", st.active and 1 <= st.frame <= 48, st.frame)
     _win, area, _region = view3d()
     check("Cache & Play switched the viewport to camera view",
           area.spaces.active.region_3d.view_perspective == 'CAMERA',
