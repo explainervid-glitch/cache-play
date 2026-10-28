@@ -41,12 +41,19 @@ BUTTONS = (
 )
 ESSENTIAL = 2
 EXPORT = ("cacheplay.export", 'EXPORT')
+POWER = ("cacheplay.power", 'QUIT')  # right end: all of Cache Play on / off
+OFF_COLOR = (0.55, 0.55, 0.55)        # power icon while switched off
 
 _button_state = []  # (under the mouse, switched on) per gizmo button, set in draw_prepare
 
 
 def _scale():
     return bpy.context.preferences.system.ui_scale
+
+
+def _widest(text):
+    """text with every digit as 0, the widest digit, for steady sizes."""
+    return "".join("0" if c.isdigit() else c for c in text)
 
 
 def _status_text(context):
@@ -59,8 +66,10 @@ def _status_text(context):
 class Geometry:
     """Where the pill and its parts sit for this viewport, in region pixels.
 
-    Left to right: chevron, BUTTONS, cached count, export button. On narrower viewports
-    the count goes first, then export with Clear and Settings.
+    Left to right: chevron, BUTTONS, cached count, export button, then the power button
+    after a small gap. On narrower viewports the count goes first, then export with Clear
+    and Settings. Switched off, the pill is a round tab holding only the power button;
+    folded, a round tab holding only the chevron.
     """
 
     def __init__(self, context):
@@ -74,8 +83,13 @@ class Geometry:
         end = self.height / 2  # round right end
         self.text = _status_text(context)
         blf.size(0, FONT_SIZE * s)
-        self.text_w, self.text_h = blf.dimensions(0, self.text)
+        self.text_h = blf.dimensions(0, self.text)[1]
+        # Room for the longest count of this range, so the pill keeps its size (and the
+        # buttons their place) while the count goes up.
+        total = self.text.split("/")[-1]
+        self.text_w = blf.dimensions(0, _widest(f"{total}/{total}"))[0]
         step = self.size + self.gap
+        power_gap = TEXT_GAP * s  # sets the power button apart
 
         def width(buttons, text, export):
             w = inset + chevron + buttons * step - self.gap + end
@@ -83,35 +97,48 @@ class Geometry:
                 w += TEXT_GAP * s + self.text_w
             if export:
                 w += (self.gap if text else 0) + step
-            return w
+            return w + power_gap + self.size
 
         room = region.width - 2 * SIDE_ROOM * s
         n = len(BUTTONS)
-        if get_prefs().toolbar_collapsed:
+        prefs = get_prefs()
+        self.enabled = prefs.enabled
+        if not self.enabled or prefs.toolbar_collapsed:
             layout = (0, False, False)
         else:
             layout = next((option for option in ((n, True, True), (n, False, True), (ESSENTIAL, False, False))
                            if width(*option) <= room), (ESSENTIAL, False, False))
         self.buttons, self.show_text, self.show_export = layout
-        total = width(*layout) if self.buttons else self.height  # folded: a round tab
+        total = width(*layout) if self.buttons else self.height  # a round tab
         self.left = region.width / 2 - total / 2
         self.right = self.left + total
         self.y = MARGIN * s + self.height / 2
         if self.buttons:
             self.chevron = (self.left + inset, self.left + inset + chevron)
+        elif self.enabled:
+            self.chevron = (self.left, self.right)  # folded
         else:
-            self.chevron = (self.left, self.right)
-        first = self.chevron[1] + self.size / 2
-        # x of every gizmo button (BUTTONS, then EXPORT); None when hidden.
+            self.chevron = None  # switched off: the tab holds the power button
+        first = (self.chevron[1] if self.buttons else self.left) + self.size / 2
+        # x of every gizmo button (BUTTONS, EXPORT, POWER); None when hidden.
         self.button_x = [first + i * step if i < self.buttons else None for i in range(n)]
         x = first + (self.buttons - 1) * step + self.size / 2  # right edge of the last button
         self.text_x = x + TEXT_GAP * s
         if self.show_text:
             x = self.text_x + self.text_w + self.gap
-        self.button_x.append(x + self.gap + self.size / 2 if self.show_export else None)
+        if self.show_export:
+            self.button_x.append(x + self.gap + self.size / 2)
+            x += self.gap + self.size
+        else:
+            self.button_x.append(None)
+        if self.buttons:
+            self.button_x.append(x + power_gap + self.size / 2)
+        else:
+            self.button_x.append(None if self.enabled else (self.left + self.right) / 2)
 
     def on_chevron(self, x, y):
-        return self.chevron[0] <= x <= self.chevron[1] and abs(y - self.y) <= self.height / 2
+        return (self.chevron is not None and self.chevron[0] <= x <= self.chevron[1]
+                and abs(y - self.y) <= self.height / 2)
 
 
 def _fill(coords, indices, color):
@@ -163,9 +190,10 @@ class CACHEPLAY_GT_pill(bpy.types.Gizmo):
         gpu.state.blend_set('ALPHA')
         _pill(geo.left - s, geo.right + s, geo.y, geo.height + 2 * s, PILL_EDGE)
         _pill(geo.left, geo.right, geo.y, geo.height, PILL_COLOR)
-        brightness = 1.0 if self.is_highlight else 0.75
-        _chevron((geo.chevron[0] + geo.chevron[1]) / 2, geo.y, s, pointing_down=bool(geo.buttons),
-                 color=(brightness, brightness, brightness, 1.0))
+        if geo.chevron is not None:
+            brightness = 1.0 if self.is_highlight else 0.75
+            _chevron((geo.chevron[0] + geo.chevron[1]) / 2, geo.y, s, pointing_down=bool(geo.buttons),
+                     color=(brightness, brightness, brightness, 1.0))
         # Round backgrounds behind the icons: orange while on, grey under the mouse. The
         # buttons draw icons only, because Blender fades a button's icon with its background.
         radius = geo.size / 2
@@ -231,7 +259,7 @@ class VIEW3D_GGT_cache_play(bpy.types.GizmoGroup):
     def setup(self, context):
         self.buttons = []  # icons
         self.hits = []     # click areas
-        for operator, icon in BUTTONS + (EXPORT,):
+        for operator, icon in BUTTONS + (EXPORT, POWER):
             gz = self.gizmos.new("GIZMO_GT_button_2d")
             gz.icon = icon
             gz.draw_options = set()  # icon only; the pill draws the round backgrounds
@@ -252,8 +280,10 @@ class VIEW3D_GGT_cache_play(bpy.types.GizmoGroup):
             if x is not None:
                 gz.scale_basis = BUTTON / 2  # Blender applies the UI scale to this itself
                 gz.matrix_basis = hit.matrix_basis = Matrix.Translation((x, geo.y, 0.0))
+        power = self.buttons[-1]
+        power.color = power.color_highlight = (1.0, 1.0, 1.0) if geo.enabled else OFF_COLOR
         state = player.state
-        lit = (state.active and not state.cache_mode, state.cache_mode, False, False, False)
+        lit = (state.active and not state.cache_mode, state.cache_mode, False, False, False, False)
         _button_state[:] = [(hit.is_highlight, on) for hit, on in zip(self.hits, lit)]
 
 

@@ -54,7 +54,7 @@ class PlayerState:
         self.filling = False   # the cache is being filled
         self.idle_step = False  # idle caching is rendering a frame right now
         self.capturing = False  # Cache & Play is caching a frame while it plays
-        self.caching = False    # the frame shown was just cached (status label)
+        self.cached_at = 0.0    # when Cache & Play last cached a frame while playing
         self.paused = False
         self.cache_mode = False       # reviewing the cache: clicks pass through, Timeline drags scrub
         self.exit_requested = False   # the Cache Mode toggle asks the running operator to stop
@@ -68,6 +68,11 @@ class PlayerState:
         self.tag_time = 0.0
         self.suppress_until = 0.0
         self.stats = None
+
+    @property
+    def caching(self):
+        """Cache & Play cached a frame in the last half second (status label)."""
+        return self.active and time.perf_counter() - self.cached_at < 0.5
 
     @property
     def frame(self):
@@ -143,7 +148,7 @@ class PlayerState:
         self.paused = False
         self.cache_mode = False
         self.exit_requested = False
-        self.caching = False
+        self.cached_at = 0.0
         self.frames = []
         self.stats = None
 

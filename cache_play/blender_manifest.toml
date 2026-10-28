@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "cache_play"
-version = "0.3.1"
+version = "0.3.2"
 name = "Cache Play"
 tagline = "After Effects style cached preview for the 3D Viewport"
 maintainer = "Zeus Animation Studio"

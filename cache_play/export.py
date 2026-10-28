@@ -18,6 +18,7 @@ from bpy_extras.io_utils import ExportHelper
 
 from . import player, store, usage
 from .store import scene_range
+from .ui import get_prefs
 
 
 def _unpack(packed, width, height):
@@ -56,7 +57,7 @@ class CACHEPLAY_OT_export(bpy.types.Operator, ExportHelper):
     @classmethod
     def poll(cls, context):
         state = player.state
-        return not store.frame_cache.is_empty() and not (state.filling or (state.active and not state.paused))
+        return get_prefs(context).enabled and not store.frame_cache.is_empty() and not (state.filling or (state.active and not state.paused))
 
     def invoke(self, context, event):
         blend = bpy.data.filepath

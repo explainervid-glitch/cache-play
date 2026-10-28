@@ -29,8 +29,24 @@ class CachePlaySettings(bpy.types.PropertyGroup):
     edit_id: StringProperty(default="", options={'HIDDEN'})
 
 
+def is_on(context=None):
+    """False while Cache Play is switched off with the power button."""
+    return get_prefs(context).enabled
+
+
+def _on_power(enabled):
+    """Switched off: stop playback / Cache Mode (the running operator ends on its next
+    event), and redraw everything so the buttons and cache bar change at once."""
+    if not enabled and player.state.active:
+        player.state.exit_requested = True
+    for window in bpy.context.window_manager.windows:
+        for area in window.screen.areas:
+            area.tag_redraw()
+
+
 class _DefaultPrefs:
     """Used when the add-on is loaded without being installed (development, tests)."""
+    enabled = True
     memory_limit_gb = 4.0
     use_disk_cache = True
     cache_dir = ""
@@ -40,6 +56,7 @@ class _DefaultPrefs:
     jump_on_stop = True
     fast_caching = False
     space_plays_cache = False
+    space_sizes = {'QUARTER'}
     toolbar = 'VIEWPORT'
     toolbar_collapsed = False
 
@@ -47,6 +64,15 @@ class _DefaultPrefs:
 class CachePlayPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
+    enabled: BoolProperty(
+        name="Cache Play On",
+        description=(
+            "Turn all of Cache Play on or off: buttons, shortcuts, the cache bar and Cache When Idle. "
+            "Cached frames stay; the power button on the viewport toolbar does the same"
+        ),
+        default=True,
+        update=lambda self, context: _on_power(self.enabled),
+    )
     memory_limit_gb: FloatProperty(
         name="RAM Limit (GB)",
         description="Most memory the cached frames may use. With the disk cache on, older frames move out to disk",
@@ -117,9 +143,17 @@ class CachePlayPreferences(bpy.types.AddonPreferences):
         name="Spacebar: Cache & Play",
         description=(
             "Space runs Cache & Play instead of Blender's normal playback, only while the scene's "
-            "Preview Size is Quarter (and the scene has a camera). Any other size: Space plays as usual"
+            "Preview Size is one of the sizes ticked below (and the scene has a camera). "
+            "Any other size: Space plays as usual"
         ),
         default=False,
+    )
+    space_sizes: EnumProperty(
+        name="Spacebar Sizes",
+        description="Preview Sizes at which Space runs Cache & Play; bigger ones cache slower and use more memory",
+        items=[item for item in store.PRESETS if item[0] != 'FULL'],
+        options={'ENUM_FLAG'},
+        default={'QUARTER'},
     )
     toolbar: EnumProperty(
         name="Toolbar",
@@ -138,32 +172,61 @@ class CachePlayPreferences(bpy.types.AddonPreferences):
     )
 
     def draw(self, context):
+        """Four folding sections under one big on/off switch."""
         layout = self.layout
-        layout.use_property_split = True
-        layout.prop(self, "memory_limit_gb")
-        layout.prop(self, "fast_caching")
-        layout.prop(self, "use_disk_cache")
-        col = layout.column()
-        col.active = self.use_disk_cache
-        col.prop(self, "cache_dir")
-        col.prop(self, "disk_limit_gb")
-        count, size = _kept_usage()
-        row = col.row()
-        row.label(text=f"Kept caches: {count} · {size / 2 ** 30:.2f} GB")
-        row.operator("cacheplay.clear_all", icon='TRASH')
-        layout.prop(self, "idle_delay")
-        col = layout.column(heading="Idle Activity", align=True)
-        col.prop(self, "idle_activity", expand=True)
-        layout.prop(self, "jump_on_stop")
-        layout.separator()
-        layout.prop(self, "toolbar")
-        layout.separator()
-        layout.label(text="Shortcuts")
         row = layout.row()
-        row.prop(self, "space_plays_cache")
-        row.label(text="(Quarter size only)")
-        from . import ops  # ops imports this module, so import late
-        ops.draw_keymap(layout, context)
+        row.scale_y = 1.4
+        row.prop(self, "enabled", toggle=True, icon='QUIT',
+                 text="Cache Play is On" if self.enabled else "Cache Play is Off")
+
+        def section(idname, title, icon):
+            header, body = layout.panel(f"cacheplay_prefs_{idname}", default_closed=False)
+            header.label(text=title, icon=icon)
+            if body is not None:
+                body.use_property_split = True
+                body.use_property_decorate = False
+                body.active = self.enabled
+            return body
+
+        body = section("playback", "Playback", 'PLAY')
+        if body:
+            body.prop(self, "jump_on_stop")
+            body.prop(self, "fast_caching")
+
+        body = section("storage", "Storage", 'DISK_DRIVE')
+        if body:
+            body.prop(self, "memory_limit_gb")
+            body.prop(self, "use_disk_cache")
+            col = body.column()
+            col.active = self.use_disk_cache and self.enabled
+            col.prop(self, "cache_dir", text="Folder")
+            col.prop(self, "disk_limit_gb")
+            count, size = _kept_usage()
+            split = col.split(factor=0.4)
+            left = split.row()
+            left.alignment = 'RIGHT'
+            left.label(text="Kept Caches")
+            right = split.row(align=True)
+            right.label(text=f"{count} · {size / 2 ** 30:.2f} GB")
+            right.operator("cacheplay.clear_all", text="Clear All", icon='TRASH')
+
+        body = section("idle", "Cache When Idle", 'TIME')
+        if body:
+            body.prop(self, "idle_delay")
+            col = body.column(heading="Counts as Working", align=True)
+            col.prop(self, "idle_activity", expand=True)
+
+        body = section("controls", "Toolbar & Shortcuts", 'TOOL_SETTINGS')
+        if body:
+            body.row().prop(self, "toolbar", expand=True)
+            body.prop(self, "space_plays_cache", text="Spacebar Runs Cache & Play")
+            row = body.row(heading="At Sizes", align=True)
+            row.active = self.space_plays_cache and self.enabled
+            row.prop(self, "space_sizes", expand=True)
+            from . import ops  # ops imports this module, so import late
+            box = body.box()
+            box.use_property_split = False
+            ops.draw_keymap(box, context)
 
 
 def get_prefs(context=None):
@@ -287,8 +350,9 @@ def _draw_timeline_header(self, context):
     if not _timeline_bar_enabled(context):
         return
     if context.space_data.mode != 'TIMELINE':
-        layout.separator()
-        _draw_cache_mode_toggle(layout)
+        if is_on(context):
+            layout.separator()
+            _draw_cache_mode_toggle(layout)
         return
     if _bar["drawn"]:
         _bar["drawn"] = False
@@ -304,6 +368,9 @@ def _draw_bar(layout, context):
     # Blender's own Timeline header takes about 1100 px; on narrower editors the two main
     # buttons drop their text so the whole bar still fits.
     wide = context.region.width >= TIMELINE_BAR_WIDE * context.preferences.system.ui_scale
+    if not is_on(context):
+        _draw_power(layout)
+        return
 
     row = layout.row(align=True)
     row.operator("cacheplay.preview", text="Cache & Play" if wide else "", icon='PLAY')
@@ -325,6 +392,20 @@ def _draw_bar(layout, context):
     row.prop(settings, "loop", text="", toggle=True, icon='FILE_REFRESH')
     row.prop(settings, "cache_when_idle", text="", toggle=True, icon='TIME')
     layout.popover(panel="DOPESHEET_PT_cache_play", text="", icon='PREFERENCES')
+    _draw_power(layout)
+
+
+def _draw_power(layout, text=""):
+    """The power button: all of Cache Play on / off."""
+    layout.operator("cacheplay.power", text=text, icon='QUIT', depress=is_on())
+
+
+def _draw_off(layout):
+    """What a panel shows while Cache Play is switched off."""
+    row = layout.row()
+    row.scale_y = 1.4
+    _draw_power(row, text="Turn Cache Play On")
+    layout.label(text="Off: no buttons, shortcuts, cache bar or idle caching", icon='INFO')
 
 
 def _draw_actions(layout):
@@ -412,6 +493,9 @@ def _draw_stats(layout):
 
 def _draw_popover(layout, context, with_settings):
     """Drop-down shared by the Timeline bar and the viewport toolbar."""
+    if not is_on(context):
+        _draw_off(layout)
+        return
     _draw_actions(layout)
     if with_settings:
         # The viewport toolbar only has round buttons, so its drop-down holds the settings.
@@ -456,8 +540,14 @@ class VIEW3D_PT_cache_play(bpy.types.Panel):
     bl_category = "Cache Play"
     bl_label = "Cache Play"
 
+    def draw_header_preset(self, context):
+        _draw_power(self.layout)
+
     def draw(self, context):
         layout = self.layout
+        if not is_on(context):
+            _draw_off(layout)
+            return
         col = layout.column(align=True)
         row = col.row(align=True)
         row.scale_y = 1.4
@@ -477,6 +567,10 @@ class VIEW3D_PT_cache_play_storage(bpy.types.Panel):
     bl_parent_id = "VIEW3D_PT_cache_play"
     bl_options = {'DEFAULT_CLOSED'}
 
+    @classmethod
+    def poll(cls, context):
+        return is_on(context)
+
     def draw(self, context):
         _draw_details(self.layout, context)
 
@@ -489,6 +583,10 @@ class VIEW3D_PT_cache_play_stats(bpy.types.Panel):
     bl_label = "Statistics"
     bl_parent_id = "VIEW3D_PT_cache_play"
     bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return is_on(context)
 
     def draw(self, context):
         _draw_stats(self.layout)

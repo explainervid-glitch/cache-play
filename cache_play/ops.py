@@ -9,7 +9,7 @@ from bpy.props import BoolProperty
 
 from . import capture, display, draw, player, store, usage
 from .store import scene_range
-from .ui import configure_cache, get_prefs
+from .ui import configure_cache, get_prefs, is_on
 
 # Seconds of caching per timer tick. Blender redraws the window between ticks (about 30 ms
 # with a heavy scene), so longer slices cache faster; 0.25 s still answers Esc quickly.
@@ -90,7 +90,7 @@ class CACHEPLAY_OT_preview(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return not (player.state.active or player.state.filling)
+        return is_on(context) and not (player.state.active or player.state.filling)
 
     def _feature(self):
         """The name zeploy counts this run under."""
@@ -206,6 +206,13 @@ class CACHEPLAY_OT_preview(bpy.types.Operator):
 
     def modal(self, context, event):
         state = player.state
+        if not is_on(context):  # switched off with the power button
+            if state.filling:
+                self._collect()
+                self._stopped_fill = True
+                self._end_fill(context, self._orig_frame)
+            self._finish(context)
+            return {'FINISHED', 'PASS_THROUGH'}
         if state.filling:
             return self._modal_fill(context, event)
         if state.active:
@@ -534,8 +541,7 @@ class CACHEPLAY_OT_preview(bpy.types.Operator):
         if not playing:
             self._finish(context)
             return {'FINISHED'}
-        state.caching = not cache.has(state.frame)
-        if state.caching:
+        if not cache.has(state.frame):
             try:
                 stored = self._capture_live(context, state.frame)
             except Exception as ex:
@@ -553,6 +559,7 @@ class CACHEPLAY_OT_preview(bpy.types.Operator):
                     return {'FINISHED'}
                 return {'PASS_THROUGH'}
             state.dirty = True
+            state.cached_at = time.perf_counter()
             state.stats.restart()  # caching time is not a playback hitch
             if not self._drop_frames:
                 state.t0 = time.perf_counter() - state.index / state.fps  # next frame one step later
@@ -646,13 +653,32 @@ class CACHEPLAY_OT_clear(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return not store.frame_cache.is_empty() and not (player.state.active or player.state.filling)
+        return is_on(context) and not store.frame_cache.is_empty() and not (player.state.active or player.state.filling)
 
     @usage.track("clear cache")
     def execute(self, context):
         store.frame_cache.clear()
         display.display.reset()
         store.tag_time_editors()
+        return {'FINISHED'}
+
+
+class CACHEPLAY_OT_power(bpy.types.Operator):
+    bl_idname = "cacheplay.power"
+    bl_label = "Cache Play On / Off"
+    bl_description = (
+        "Turn all of Cache Play on or off: buttons, shortcuts, the cache bar and Cache When Idle. "
+        "Cached frames stay"
+    )
+
+    def execute(self, context):
+        from . import ui  # ui is imported above as names only
+        prefs = get_prefs(context)
+        prefs.enabled = not prefs.enabled
+        if prefs is ui._DefaultPrefs:
+            ui._on_power(prefs.enabled)  # a real preference calls it from its update
+        else:
+            context.preferences.is_dirty = True
         return {'FINISHED'}
 
 
@@ -691,7 +717,7 @@ class CACHEPLAY_OT_cache_mode(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         state = player.state
-        return state.cache_mode or not (state.active or state.filling)
+        return is_on(context) and (state.cache_mode or not (state.active or state.filling))
 
     def invoke(self, context, event):
         state = player.state
@@ -707,23 +733,24 @@ class CACHEPLAY_OT_cache_mode(bpy.types.Operator):
 
 
 class CACHEPLAY_OT_space_play(bpy.types.Operator):
-    """Spacebar runs Cache & Play instead of Blender's playback (preference, Quarter size only).
+    """Spacebar runs Cache & Play instead of Blender's playback (preference, chosen sizes only).
 
     Bound to Space in the Frames keymap, next to Blender's own Play. When poll() fails the
     key falls through to Blender's Play, so Space works as usual in every other case.
     """
     bl_idname = "cacheplay.space_play"
     bl_label = "Cache & Play (Spacebar)"
-    bl_description = "Cache & Play at Quarter size; Blender's normal playback otherwise"
+    bl_description = "Cache & Play at the sizes chosen in the preferences; Blender's normal playback otherwise"
     bl_options = {'INTERNAL'}
 
     @classmethod
     def poll(cls, context):
         scene = context.scene
         state = player.state
-        return (get_prefs(context).space_plays_cache
+        prefs = get_prefs(context)
+        return (prefs.enabled and prefs.space_plays_cache
                 and scene is not None and scene.camera is not None
-                and scene.cache_play.preview_size == 'QUARTER'
+                and scene.cache_play.preview_size in prefs.space_sizes
                 and not (state.active or state.filling)
                 and not (context.screen and context.screen.is_animation_playing)
                 and capture.find_view3d(context) is not None)
@@ -758,7 +785,7 @@ class CACHEPLAY_OT_settings(bpy.types.Operator):
         return {'FINISHED'}
 
 
-classes = (CACHEPLAY_OT_preview, CACHEPLAY_OT_clear, CACHEPLAY_OT_clear_all, CACHEPLAY_OT_cache_mode, CACHEPLAY_OT_space_play,
+classes = (CACHEPLAY_OT_preview, CACHEPLAY_OT_clear, CACHEPLAY_OT_power, CACHEPLAY_OT_clear_all, CACHEPLAY_OT_cache_mode, CACHEPLAY_OT_space_play,
            CACHEPLAY_OT_settings)
 
 # Default shortcuts. Blender 5.1/5.2's default keymap leaves F5-F8 free, also with Ctrl, Alt

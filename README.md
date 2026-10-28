@@ -9,7 +9,7 @@ v2 adds a disk cache (like After Effects 25.2+ "Preview from Disk Cache"): every
 ## Install
 
 1. In Blender: Edit > Preferences > Get Extensions > the drop-down arrow (top right) > **Install from Disk…**
-2. Pick `dist/cache_play-0.3.1.zip` (it replaces an older version). Blender asks to allow file access: that is the disk cache, and the feature-use counts for zeploy (see below).
+2. Pick `dist/cache_play-0.3.2.zip` (it replaces an older version). Blender asks to allow file access: that is the disk cache, and the feature-use counts for zeploy (see below).
 3. The panel is in the 3D Viewport sidebar (press N) under the **Cache Play** tab.
 
 ### While developing: link instead of installing
@@ -109,12 +109,13 @@ With the defaults, anything you do in Blender, even just moving the mouse over i
 - **⌄ chevron**: folds the pill down to a small round tab (^); click again to open it. Remembered between sessions.
 - **▶ Cache & Play** · **🎞 Cache Mode** (orange circle while on; a grey circle shows which button is under the mouse) · **🗑 Clear** · **⚙ Settings**
 - how much is cached, e.g. "48/96", then **⤴ Export** (save the cached preview as a video, see Export below).
+- **⏻ Power**, set slightly apart at the right end: turns all of Cache Play off and on (see Power button below). Off, the pill is just this button.
 
 **⚙ Settings** opens its drop-down on a normal click (no need to hold the button) and it stays open until you move the mouse away. Inside, top to bottom: **Cache Only** | **Export**; Preview Size; **Loop** | **Cache When Idle**; a box with the cached-frames line and a 🗑 Clear button beside it (plus any warning, and what idle caching is doing while frames are missing); **Cache Details** and **Statistics**, folded.
 
 It adapts to the viewport's width: on narrow viewports it first drops the count, then Clear, Settings and Export (▶ and 🎞 always stay). While Cache & Play or Cache Mode runs, a small label sits just above the pill, e.g. **CACHE MODE** 12 · scene 0 · paused (the cache frame, then Blender's own frame). On narrow viewports it shortens to the frame number. Hover a button for its name; hovering never changes the mouse cursor. The toolbar stays visible over the cached picture in Cache Mode. It hides with the viewport's Show Gizmos toggle (the arrow icon in the viewport header).
 
-**Spacebar (optional)**: Preferences > Add-ons > Cache Play > **Spacebar: Cache & Play** (off by default). When it is on and the scene's Preview Size is **Quarter**, Space runs Cache & Play instead of Blender's normal playback: it caches what is missing from the playhead on, then plays. Space again **stops**, like Blender's own Space: during caching it stops caching (frames done so far are kept), during playback it stops and Blender's playhead moves to the frame you stopped on (if Move Playhead on Stop is on). Started from the button or F5, Space still pauses. With any other size, without a scene camera, or while Blender's own playback runs, Space plays as usual. If your Spacebar is set to Tools or Search in Blender's keymap preferences, it is not taken over in the 3D Viewport.
+**Spacebar (optional)**: Preferences > Add-ons > Cache Play > **Spacebar: Cache & Play** (off by default). When it is on and the scene's Preview Size is one of the sizes ticked under **At Sizes** (Half, Third, Quarter; Quarter only by default), Space runs Cache & Play instead of Blender's normal playback: it caches what is missing from the playhead on, then plays. Space again **stops**, like Blender's own Space: during caching it stops caching (frames done so far are kept), during playback it stops and Blender's playhead moves to the frame you stopped on (if Move Playhead on Stop is on). Started from the button or F5, Space still pauses. With a size not ticked, without a scene camera, or while Blender's own playback runs, Space plays as usual. If your Spacebar is set to Tools or Search in Blender's keymap preferences, it is not taken over in the 3D Viewport.
 
 **Shortcuts**: **F5** = Cache & Play, **F6** = Cache Mode (press again to leave), **Ctrl+F5** = Clear Cache (two keys, so it is not pressed by accident). Blender 5.1/5.2 leave F5–F8 unused by default, also with Ctrl, Alt or Ctrl+Shift (only Shift+F5–F8 are taken). They work in any editor. Change them in Preferences > Add-ons > Cache Play > Shortcuts.
 
@@ -137,14 +138,14 @@ Sidebar panel (3D Viewport sidebar, **Cache Play** tab), always there, with the 
 - **Cache Details** (folded): camera, picture size, MB per frame, RAM and disk use as two neat columns, and a **Limits & Folder…** button that opens the add-on preferences.
 - **Statistics** (folded): how smoothly the last cached playback ran.
 
-Add-on preferences:
+Add-on preferences (Preferences > Add-ons > Cache Play): a big **Cache Play is On / Off** switch on top, then four sections you can fold:
 
-- **RAM Limit** (default 4 GB): the most RAM the frames may use. With the disk cache on, older frames move out to disk; with it off, caching stops here.
-- **Disk Cache** (on), **Cache Folder** (empty = Blender's temporary folder, else the system temp folder, in a `CachePlay` subfolder), **Disk Limit** (default 20 GB, for all kept caches together; the least recently used caches are deleted first, and caching stops only when this cache alone fills it). Use a fast SSD. Below it: how many kept caches there are and their size, and **Clear All Caches** (deletes the kept caches of every file, except ones another open Blender is using; asks first).
-- **Idle Delay** (3 s) and **Idle Activity** (see Cache When Idle), **Move Playhead on Stop** (on).
-- **Fast GPU Caching** (off): on = the speed-ups below (graphics card packs the pixels, overlapped steps), about 30% faster caching. Off by default, the plain way, which every graphics driver handles; turn it on if it works well on your PC. Both give identical pictures in tests.
-- **Toolbar**: 3D Viewport (default), Timeline Header, or Both.
-- **Shortcuts**: F5, F6 and Ctrl+F5, editable; **Spacebar: Cache & Play** (off), Quarter size only.
+- **Playback**: **Move Playhead on Stop** (on), **Fast GPU Caching** (off): on = the speed-ups below (graphics card packs the pixels, overlapped steps), about 30% faster Cache Only. Off is the plain way every graphics driver handles; both give identical pictures in tests.
+- **Storage**: **RAM Limit** (4 GB; with the disk cache on, older frames move out to disk, with it off caching stops here), **Disk Cache** (on), **Folder** (empty = Blender's temporary folder, else the system temp folder, in a `CachePlay` subfolder), **Disk Limit** (20 GB, for all kept caches together; the least recently used are deleted first, and caching stops only when this cache alone fills it; use a fast SSD), **Kept Caches**: how many and how big, with **Clear All** (every file's kept caches except ones another open Blender is using; asks first).
+- **Cache When Idle**: **Idle Delay** (3 s) and **Idle Activity** (see Cache When Idle).
+- **Toolbar & Shortcuts**: **Toolbar** 3D Viewport | Timeline Header | Both, **Spacebar Runs Cache & Play** (off) with **Spacebar Sizes** Half | Third | Quarter (Quarter), and the editable shortcuts F5, F6 and Ctrl+F5.
+
+**Power button** (⏻): at the right end of the viewport pill, at the end of the Timeline bar, in the sidebar panel's header and in the drop-downs, and as the big switch in the preferences. Off turns all of Cache Play off: its buttons, F5/F6/Ctrl+F5 and the Spacebar option (Space plays as usual), the cache bar in the time editors and Cache When Idle. A running Cache & Play or Cache Mode stops. The pill shrinks to a round tab with just the power button, the panels show only a "Turn Cache Play On" button. Cached frames stay (in RAM and on disk), so switching back on is instant. Remembered between sessions, like other preferences. Edits still mark kept caches out of date while it is off, so nothing stale is shown later.
 
 Size per frame: Full 1080p ≈ 8 MB, Half ≈ 2 MB, Quarter ≈ 0.5 MB. 10 seconds at 24 fps is about 2 GB at Full, 0.5 GB at Half.
 

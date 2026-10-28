@@ -9,7 +9,7 @@ scene.frame_current, so Blender never re-evaluates the scene during playback.
 bl_info = {
     "name": "Cache Play",
     "author": "Zeus Animation Studio",
-    "version": (0, 3, 1),
+    "version": (0, 3, 2),
     "blender": (5, 1, 0),
     "location": "3D Viewport > Sidebar > Cache Play",
     "description": "After Effects style cached preview for the 3D Viewport",

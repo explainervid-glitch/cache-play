@@ -274,7 +274,7 @@ def _view_moved(space):
 def _tick_unsafe():
     interactive = _interactive_modal_running()
     found = _target()
-    if found is None or not found[0].scene.cache_play.cache_when_idle:
+    if found is None or not found[0].scene.cache_play.cache_when_idle or not get_prefs().enabled:
         _set_status("")
         _free_capturer()
         return 1.0

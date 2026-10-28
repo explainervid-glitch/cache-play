@@ -125,6 +125,7 @@ def _draw_view3d_picture():
 
 
 HUD_FONT = 10
+_hud_width = {}  # widest label so far in this run
 HUD_HEIGHT = 17   # label height, px at UI scale 1
 HUD_PAD = 8       # text to label edge
 HUD_ABOVE = 4     # gap between the label and the toolbar pill
@@ -139,7 +140,7 @@ def _hud_parts(context, state):
     else:
         details = [str(state.frame), f"{state.fps:.4g} fps"]
     if state.caching:
-        details.append("caching")  # Cache & Play just cached the frame shown
+        details.append("caching")  # Cache & Play cached a frame just now
     elif state.stats is not None and state.stats.dropped:
         details.append(f"{state.stats.dropped} dropped")
     short = [str(state.frame)]
@@ -163,7 +164,16 @@ def _draw_hud(context, state):
     details = long if title_w + blf.dimensions(0, long)[0] + 2 * pad <= room else short
     if title_w + blf.dimensions(0, details)[0] + 2 * pad > room:
         title = ""
-    width = blf.dimensions(0, title)[0] + blf.dimensions(0, details)[0] + 2 * pad
+    # Measured with the range's longest frame number, so 9 -> 10 -> 100 does not resize it.
+    longest = str(max(state.frames, default=0))
+    measure = details.replace(str(state.frame), longest if len(longest) > len(str(state.frame)) else str(state.frame), 1)
+    width = (blf.dimensions(0, title)[0] + blf.dimensions(0, toolbar._widest(measure))[0]
+             + 2 * pad)
+    # Never shrink while it runs: the label keeps its place as numbers and words change.
+    key = (state.area_ptr, title)
+    if _hud_width.get("key") != key or _hud_width.get("run") != id(state.stats):
+        _hud_width.update(key=key, run=id(state.stats), width=0.0)
+    width = _hud_width["width"] = max(width, _hud_width["width"])
 
     pill_shown = (toolbar.get_prefs().toolbar in {'VIEWPORT', 'BOTH'}
                   and context.space_data.show_gizmo)
@@ -218,6 +228,9 @@ def _draw_time_editor():
     context = bpy.context
     if not store.is_frame_editor(context.area):
         return  # e.g. the Drivers editor, whose horizontal axis is not frames
+    from .ui import is_on  # ui imports this module's neighbours; import late
+    if not is_on():
+        return
     cache = store.frame_cache
     state = player.state
     in_ram = cached = None
