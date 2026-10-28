@@ -9,7 +9,7 @@ v2 adds a disk cache (like After Effects 25.2+ "Preview from Disk Cache"): every
 ## Install
 
 1. In Blender: Edit > Preferences > Get Extensions > the drop-down arrow (top right) > **Install from Disk…**
-2. Pick `dist/cache_play-0.2.20.zip` (it replaces an older version). Blender asks to allow file access: that is the disk cache, and the feature-use counts for zeploy (see below).
+2. Pick `dist/cache_play-0.3.0.zip` (it replaces an older version). Blender asks to allow file access: that is the disk cache, and the feature-use counts for zeploy (see below).
 3. The panel is in the 3D Viewport sidebar (press N) under the **Cache Play** tab.
 
 ### While developing: link instead of installing
@@ -34,7 +34,12 @@ To build a zip for other machines:
 ## Use
 
 1. Cache Play always caches **through the scene camera**. If the viewport is not in camera view, Cache & Play, Cache Only and Cache Mode switch it to camera view first (like Numpad 0). The viewport only decides the look (shading, overlays). Zooming, panning or even orbiting the viewport afterwards never makes the cache out of date. No scene camera means no caching: Cache Play says so.
-2. Press **Cache & Play**. Cache Play steps through the range (the preview range if one is set), stores each picture, and starts playing when done.
+2. Press **Cache & Play**. Like After Effects, it works through the range (the preview range if one is set) **from the playhead** (from the start if the playhead is on the last frame or outside the range):
+   - Frames already cached play straight away, in real time.
+   - When playback reaches a frame that is not cached, it caches the missing stretch from there (up to the next cached frame or the end of the range; you see the frames as they are calculated), then plays on from the start of that stretch.
+   - Example: frames 1–56 cached, playhead on 10, range 1–120. Playback starts at 10 at once; at 56 it caches 57–120, then plays from 57, and loops to 1 if Loop is on.
+   - With nothing cached it caches from the playhead to the end, plays that, and with Loop on caches the start of the range when it gets there.
+   **Cache Only** still caches everything missing in one go: from the playhead to the end, then the frames before the playhead.
 3. Press **Cache & Play** again later: frames already cached are not drawn again.
 
 The bar under the frame numbers works like After Effects. It shows in the Timeline, Dope Sheet, Graph Editor and NLA Editor, and so does the cache playhead (with its frame number) while playing or in Cache Mode:
@@ -52,7 +57,7 @@ While playing:
 | Esc, any other key, or a click | Stop. The scene jumps to the frame that was showing |
 | Mouse wheel, Shift, Ctrl, Alt | Ignored, playback continues |
 
-While caching, Esc stops early and keeps the frames done so far.
+While caching, Esc stops early and keeps the frames done so far. Blender's playhead then stays on the **last frame cached** (start caching at 30, stop at 80: the playhead is on 80), with Move Playhead on Stop on; with it off, the playhead goes back to where it was. Cache Mode never moves Blender's playhead.
 
 Shortcut: **F5** (change it in the add-on preferences).
 
@@ -109,6 +114,8 @@ With the defaults, anything you do in Blender, even just moving the mouse over i
 
 It adapts to the viewport's width: on narrow viewports it first drops the count, then Clear, Settings and Export (▶ and 🎞 always stay). While Cache & Play or Cache Mode runs, a small label sits just above the pill, e.g. **CACHE MODE** 12 · scene 0 · paused (the cache frame, then Blender's own frame). On narrow viewports it shortens to the frame number. Hover a button for its name; hovering never changes the mouse cursor. The toolbar stays visible over the cached picture in Cache Mode. It hides with the viewport's Show Gizmos toggle (the arrow icon in the viewport header).
 
+**Spacebar (optional)**: Preferences > Add-ons > Cache Play > **Spacebar: Cache & Play** (off by default). When it is on and the scene's Preview Size is **Quarter**, Space runs Cache & Play instead of Blender's normal playback: it caches what is missing from the playhead on, then plays. Space again **stops**, like Blender's own Space: during caching it stops caching (frames done so far are kept), during playback it stops and Blender's playhead moves to the frame you stopped on (if Move Playhead on Stop is on). Started from the button or F5, Space still pauses. With any other size, without a scene camera, or while Blender's own playback runs, Space plays as usual. If your Spacebar is set to Tools or Search in Blender's keymap preferences, it is not taken over in the 3D Viewport.
+
 **Shortcuts**: **F5** = Cache & Play, **F6** = Cache Mode (press again to leave), **Ctrl+F5** = Clear Cache (two keys, so it is not pressed by accident). Blender 5.1/5.2 leave F5–F8 unused by default, also with Ctrl, Alt or Ctrl+Shift (only Shift+F5–F8 are taken). They work in any editor. Change them in Preferences > Add-ons > Cache Play > Shortcuts.
 
 **Timeline bar** (optional: Preferences > Toolbar > Timeline Header or Both): in the Timeline header between Blender's **Playback** drop-down and the Auto Keying button, left to right:
@@ -125,7 +132,7 @@ On a Timeline narrower than about 1750 px, Cache & Play and Cache Mode show icon
 Sidebar panel (3D Viewport sidebar, **Cache Play** tab), always there, with the same controls, top to bottom:
 
 - One joined 2 × 2 block: **Cache & Play** | **Cache Mode** (toggle), then **Cache Only** | **Export**.
-- **Preview Size**: Full | Half | Third | Quarter, joined to the **Loop** | **Cache When Idle** toggles below it. Full is the render resolution fitted inside 1920×1080 (1080×1920 for vertical); the others divide it. Smaller caches faster and uses less space.
+- **Preview Size**: Full | Half | Third (default) | Quarter, joined to the **Loop** | **Cache When Idle** toggles below it. Full is the render resolution fitted inside 1920×1080 (1080×1920 for vertical); the others divide it. Smaller caches faster and uses less space.
 - A status box: "All 250 frames cached", "48 of 96 frames cached" or "Nothing cached yet" with the 🗑 **Clear** button at its right end, a red line if the cache is full or the disk fails, and, while frames are missing, what idle caching is doing.
 - **Cache Details** (folded): camera, picture size, MB per frame, RAM and disk use as two neat columns, and a **Limits & Folder…** button that opens the add-on preferences.
 - **Statistics** (folded): how smoothly the last cached playback ran.
@@ -133,11 +140,11 @@ Sidebar panel (3D Viewport sidebar, **Cache Play** tab), always there, with the 
 Add-on preferences:
 
 - **RAM Limit** (default 4 GB): the most RAM the frames may use. With the disk cache on, older frames move out to disk; with it off, caching stops here.
-- **Disk Cache** (on), **Cache Folder** (empty = Blender's temporary folder, else the system temp folder, in a `CachePlay` subfolder), **Disk Limit** (default 20 GB; caching stops there). Use a fast SSD.
+- **Disk Cache** (on), **Cache Folder** (empty = Blender's temporary folder, else the system temp folder, in a `CachePlay` subfolder), **Disk Limit** (default 20 GB, for all kept caches together; the least recently used caches are deleted first, and caching stops only when this cache alone fills it). Use a fast SSD. Below it: how many kept caches there are and their size, and **Clear All Caches** (deletes the kept caches of every file, except ones another open Blender is using; asks first).
 - **Idle Delay** (3 s) and **Idle Activity** (see Cache When Idle), **Move Playhead on Stop** (on).
-- **Fast GPU Caching** (on): the speed-ups below (graphics card packs the pixels, overlapped steps). Off = the older, slower way, as a fallback if cached frames ever look wrong with a graphics driver. Both give identical pictures in tests.
+- **Fast GPU Caching** (off): on = the speed-ups below (graphics card packs the pixels, overlapped steps), about 30% faster caching. Off by default, the plain way, which every graphics driver handles; turn it on if it works well on your PC. Both give identical pictures in tests.
 - **Toolbar**: 3D Viewport (default), Timeline Header, or Both.
-- **Shortcuts**: F5, F6 and Ctrl+F5, editable.
+- **Shortcuts**: F5, F6 and Ctrl+F5, editable; **Spacebar: Cache & Play** (off), Quarter size only.
 
 Size per frame: Full 1080p ≈ 8 MB, Half ≈ 2 MB, Quarter ≈ 0.5 MB. 10 seconds at 24 fps is about 2 GB at Full, 0.5 GB at Half.
 
@@ -160,7 +167,27 @@ The v1 **Storage: RAM / GPU** option is gone. Tests showed no difference in smoo
 - Not cleared by: changing frames, scrubbing, normal Blender playback, selecting things, changing Cache Play settings, opening or closing a window such as the Export file browser.
 - A different view, preview size, shading mode, colour management or render resolution makes the next **Cache & Play** start over, because the old pictures no longer match.
 - Not caught automatically: render-engine settings (e.g. EEVEE options in Rendered shading). Press **Clear** after changing those.
-- Disk files belong to one Blender session. They are deleted when the cache is cleared and when Blender closes. Leftovers from a crash are deleted the next time Cache Play uses the disk. Reusing frames after reopening a file is v3 ("name tags").
+- **The cache is kept after closing Blender** (for saved files), like After Effects' disk cache. Reopen the file and the cached frames are there again (blue in the timeline) and play at once. See "Kept caches" below.
+- Files that were never saved: their frames are deleted when Blender closes. A cache made before the first save stays a temporary one until the next Cache & Play.
+
+## Kept caches
+
+Each cache of a saved .blend gets a "name tag" made of everything that decides the pictures: the file, the scene, the camera, size, shading and colour settings, the dates of linked files and image textures, the Blender version, and an **edit id** saved inside the .blend. Every edit gives the scene a new edit id. When you open a file, Cache Play looks for a kept cache with exactly that tag, made from the file as it is saved on disk.
+
+| You did | When you reopen the file |
+| --- | --- |
+| Cached, closed (saved or not, no edits) | Cache is there |
+| Cached, edited, closed **without** saving | Cache is there: the saved file is the state that was cached |
+| Cached, edited, saved | The old cache doesn't match; Cache & Play makes a new one (if you cached after the edit, that one is there) |
+| The .blend was changed elsewhere (another PC, a Blender without Cache Play, copied over) | Not trusted: the file's date differs, so it caches again |
+| Changed a linked file or texture outside Blender | Caches again (its date is in the tag) |
+
+- An edit clears the cache in Blender as before, but leaves the old pictures on disk, so going back to the saved file can still use them. The **Clear** button deletes them.
+- After **Save As**, the cache moves to the new file name.
+- Old caches are deleted least-recently-used first when the **Disk Limit** is reached, or with **Clear All Caches** in the preferences.
+- Two Blenders never write into the same kept cache; the second one gets its own.
+- Leftovers from a crash are deleted the next time Cache Play uses the disk.
+- Not caught: render-engine settings (e.g. EEVEE options in Rendered shading) and add-ons that change the picture without an edit. Press **Clear** after changing those.
 
 What you see is what gets cached, including overlays (grid, outlines, bones). Turn overlays off first for a clean picture.
 
@@ -190,7 +217,7 @@ Test scene: 24 subdivided, wave-deformed monkeys (760 000 vertices). Blender nee
 | **Cache Only, before (v0.2.16)** | **~127 ms** | **~157 ms** |
 | **Cache Only, now** | **~86–96 ms** | **~104–131 ms** |
 
-Three changes (Preferences > Fast GPU Caching turns the first two off):
+Three changes (the first two only with Preferences > Fast GPU Caching on; it is off by default):
 
 - **Overlap**: a frame is drawn, then the next frame is worked out while the graphics card finishes the drawing, and only then is the picture copied back. The wait mostly disappears.
 - **No packing on the CPU**: the graphics card writes the packed pixels directly (it stamps the unused alpha byte), checked bit for bit against the old packing on Vulkan and OpenGL.
@@ -204,11 +231,13 @@ Caveat: the frames had just been written, so Windows probably still had them in 
 
 Automatic tests, all passing on Blender 5.1.1 and 5.2.0:
 
-- `test_controls.py`: 17 of 17. Keys, clicks, pause, step, stop, Esc while caching, refill on size change.
+- `test_controls.py`: 18 of 18. Keys, clicks, pause, step, stop, Esc while caching, caching starts at the playhead, refill on size change.
 - `test_idle.py`: 10 of 10. Starts by itself; playhead never moves; pauses on input; finishes the range; saves to disk; rebuilds after an edit; keeps working in a free view without changing it. 
 - `test_cache_mode.py`: 19 of 19. Enter (with caching), drag in the Timeline and in the Graph Editor frame bar, a lower Graph Editor click left to Blender, play, click elsewhere, step, jump, exit by toggle and by Esc, edit clears. Blender's playhead stayed on its frame throughout. These tests send events straight to Cache Play; a real mouse drag over the Timeline has not been tested by hand yet.
 - `test_cache_mode_reuse.py`: 8 of 8. Cache Mode reuses the cache when pressed in another viewport, in the Timeline header, from a free view (switching to camera, and back to the exact free view on exit by Esc or toggle), and with a partial cache; it caches only when the cache is empty.
 - `test_idle_cache_mode.py`: 10 of 10. Idle caching fills a partial cache while Cache Mode is open and paused; new frames become scrubbable; Blender's playhead stays put; the status line shows "Caching frame …" and "Waiting …"; by default moving the mouse counts and other programs don't, unticking Mouse Movement stops it counting, and unticking Edits stops frame changes counting. (Both idle tests replace the keyboard/mouse check with a value they control, so they pass while the computer is in use.)
+- `test_play_through.py`: 7 of 7. Stopping Cache Only leaves the playhead on the last cached frame; with frames 1–56 cached and the playhead on 10, Cache & Play plays at once from 10, caches 57–120 when it reaches 56 and plays on from 57; stopping playback leaves the playhead on the shown frame; Space during a gap stops and keeps the playhead on the last cached frame.
+- `tests/run_persist.sh` (`test_persist.py`, one Blender start per step): 13 of 13. Cache, quit, reopen: the cache is found and Cache & Play caches nothing; an unsaved edit clears it but leaves the folder, and reopening without saving finds it again; edit + save makes a new cache, and with room for one the oldest is deleted; reopening after the save finds the new one; a .blend with a new date (changed outside) is not trusted; after Save As the new file name finds the cache; Clear All Caches deletes everything.
 
 v1 results (Blender 5.1 and 5.2, OpenGL and Vulkan, 0 dropped frames, ≤ 1 ms jitter) still hold.
 

@@ -14,7 +14,7 @@ class CachePlaySettings(bpy.types.PropertyGroup):
         name="Preview Size",
         description="Size of the cached pictures. Smaller fills faster and uses less memory",
         items=store.PRESETS,
-        default='HALF',
+        default='THIRD',
     )
     loop: BoolProperty(name="Loop", description="Start again at the end of the range", default=True)
     cache_when_idle: BoolProperty(
@@ -25,6 +25,8 @@ class CachePlaySettings(bpy.types.PropertyGroup):
         ),
         default=False,
     )
+    # Changes on every edit and is saved with the file: part of a kept cache's name tag.
+    edit_id: StringProperty(default="", options={'HIDDEN'})
 
 
 class _DefaultPrefs:
@@ -36,7 +38,8 @@ class _DefaultPrefs:
     idle_delay = 3.0
     idle_activity = {'KEYS', 'EDITS', 'MOUSE'}
     jump_on_stop = True
-    fast_caching = True
+    fast_caching = False
+    space_plays_cache = False
     toolbar = 'VIEWPORT'
     toolbar_collapsed = False
 
@@ -64,7 +67,10 @@ class CachePlayPreferences(bpy.types.AddonPreferences):
     )
     disk_limit_gb: FloatProperty(
         name="Disk Limit (GB)",
-        description="Stop caching when the frames on disk reach this size",
+        description=(
+            "Most disk space for all cached frames together, kept caches of other files included. "
+            "When it is reached, the least recently used caches are deleted first"
+        ),
         default=20.0,
         min=1.0,
         soft_max=500.0,
@@ -103,9 +109,17 @@ class CachePlayPreferences(bpy.types.AddonPreferences):
         name="Fast GPU Caching",
         description=(
             "Let the graphics card pack the pixels and work on one frame while Blender calculates "
-            "the next (about 30% faster). Turn off if cached frames ever look wrong with your graphics driver"
+            "the next (about 30% faster). Off by default; turn it on if your graphics driver handles it well"
         ),
-        default=True,
+        default=False,
+    )
+    space_plays_cache: BoolProperty(
+        name="Spacebar: Cache & Play",
+        description=(
+            "Space runs Cache & Play instead of Blender's normal playback, only while the scene's "
+            "Preview Size is Quarter (and the scene has a camera). Any other size: Space plays as usual"
+        ),
+        default=False,
     )
     toolbar: EnumProperty(
         name="Toolbar",
@@ -133,6 +147,10 @@ class CachePlayPreferences(bpy.types.AddonPreferences):
         col.active = self.use_disk_cache
         col.prop(self, "cache_dir")
         col.prop(self, "disk_limit_gb")
+        count, size = _kept_usage()
+        row = col.row()
+        row.label(text=f"Kept caches: {count} · {size / 2 ** 30:.2f} GB")
+        row.operator("cacheplay.clear_all", icon='TRASH')
         layout.prop(self, "idle_delay")
         col = layout.column(heading="Idle Activity", align=True)
         col.prop(self, "idle_activity", expand=True)
@@ -141,6 +159,9 @@ class CachePlayPreferences(bpy.types.AddonPreferences):
         layout.prop(self, "toolbar")
         layout.separator()
         layout.label(text="Shortcuts")
+        row = layout.row()
+        row.prop(self, "space_plays_cache")
+        row.label(text="(Quarter size only)")
         from . import ops  # ops imports this module, so import late
         ops.draw_keymap(layout, context)
 
@@ -162,6 +183,20 @@ def configure_cache(context=None):
         int(prefs.memory_limit_gb * 2 ** 30), int(prefs.disk_limit_gb * 2 ** 30),
         prefs.use_disk_cache, base_dir,
     )
+
+
+_usage_cache = {"time": 0.0, "value": (0, 0)}
+
+
+def _kept_usage():
+    """Kept caches on disk, measured at most every few seconds (the folder may be on a network)."""
+    import time
+    now = time.monotonic()
+    if now - _usage_cache["time"] > 5.0:
+        configure_cache()
+        _usage_cache["value"] = store.frame_cache.kept_usage()
+        _usage_cache["time"] = now
+    return _usage_cache["value"]
 
 
 def _megabytes(n_bytes):

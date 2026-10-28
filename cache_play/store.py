@@ -7,11 +7,14 @@ ahead of the playhead from disk into RAM and lets older ones go, like After Effe
 "Preview from Disk Cache". With the disk cache off, RAM holds everything, as in v1.
 """
 
+import hashlib
+import json
 import os
 import queue
 import shutil
 import threading
 import time
+import uuid
 
 import bpy
 import numpy as np
@@ -86,7 +89,7 @@ class FrameCache:
         self.ram = {}              # frame -> packed array, least recently used first
         self.disk = set()          # frames with a complete file
         self.pending = set()       # frames queued for writing; they stay in RAM until written
-        self.folder = None         # this cache's folder inside the session folder
+        self.folder = None         # folder of the frame files: kept (saved .blend) or session
         self.disk_error = ""
         self.full_reason = ""      # why the last put() was refused
         self.sync_reads = 0        # frames the main thread had to read itself (reader was late)
@@ -96,6 +99,10 @@ class FrameCache:
         self.disk_limit = 20 * 2 ** 30
         self.base_dir = ""
         self._session = None
+        self._kept = None          # lock on the kept folder in use (saved .blend), else None
+        self._others = []          # (last used, folder, bytes) of the other kept caches
+        self._others_bytes = 0
+        self._over_disk_limit = False
         self._want = ()            # frames to keep in RAM, nearest first (set during playback)
         self._want_set = frozenset()
         self._jobs = queue.Queue()
@@ -133,26 +140,36 @@ class FrameCache:
 
     def configure(self, ram_limit, disk_limit, use_disk, base_dir):
         if (use_disk, base_dir) != (self.use_disk, self.base_dir) and self.key is not None:
-            self.clear()
+            self.clear(delete=False)
         self.ram_limit = ram_limit
         self.disk_limit = disk_limit
         self.use_disk = use_disk
         self.base_dir = base_dir
 
     def prepare(self, key, scene_name, width, height, mode, area_ptr):
-        """Make the cache match key. Returns True when old frames were thrown away."""
+        """Make the cache match key. Returns True when old frames were set aside.
+
+        For a saved .blend the frames go into a kept folder named by persist_tag(); if one
+        from an earlier session still matches, its frames are cached already.
+        """
         self.area_ptr = area_ptr
         if key == self.key:
             return False
         had_frames = not self.is_empty()
-        self.clear()
-        folder = None
+        self.clear(delete=False)
+        folder, kept, frames = None, None, set()
         if self.use_disk:
             try:
-                folder = os.path.join(self._ensure_session().path, f"{self.generation:05d}")
-                os.makedirs(folder, exist_ok=True)
+                tag = persist_tag(scene_name, key)
+                if tag is not None:
+                    kept, frames = self._open_kept(tag, width, height, mode)
+                    folder = kept.path if kept is not None else None
+                if folder is None:
+                    folder = os.path.join(self._ensure_session().path, f"{self.generation:05d}")
+                    os.makedirs(folder, exist_ok=True)
+                self._start_threads()
             except OSError as ex:
-                folder = None
+                folder, kept, frames = None, None, set()
                 self.disk_error = f"Disk cache unavailable: {ex}"
         with self.lock:
             self.key = key
@@ -161,7 +178,88 @@ class FrameCache:
             self.height = height
             self.mode = mode
             self.folder = folder
+            self._kept = kept
+            self.disk = frames
+        if kept is not None:
+            self._measure_others()
         return had_frames
+
+    def _open_kept(self, tag, width, height, mode):
+        """Lock the kept folder for tag. Returns (lock, frames reused), or (None, set()) when
+        another Blender is using it."""
+        folder = os.path.join(disk.caches_dir(self.base_dir), tag["id"])
+        os.makedirs(folder, exist_ok=True)
+        try:
+            kept = disk.FolderLock(folder)
+        except OSError:
+            return None, set()
+        info = disk.read_info(folder)
+        reusable = (info is not None and info.get("width") == width and info.get("height") == height
+                    and (info.get("session") == disk.SESSION_ID
+                         or (info.get("blend_mtime") is not None
+                             and info.get("blend_mtime") == tag["disk_mtime"])))
+        if reusable:
+            frames = disk.frames_in(folder, width * height * 4)
+        else:
+            disk.remove_frames(folder)  # pictures of another state of the file
+            frames = set()
+        fields = {k: v for k, v in tag.items() if k not in ("id", "disk_mtime", "at_disk_state")}
+        if tag["at_disk_state"]:
+            blend_mtime = tag["disk_mtime"]  # the saved .blend shows exactly this state
+        else:
+            blend_mtime = info.get("blend_mtime") if reusable else None
+        disk.write_info(folder, {
+            **fields, "width": width, "height": height, "mode": mode,
+            "session": disk.SESSION_ID, "last_used": time.time(), "blend_mtime": blend_mtime,
+        })
+        return kept, frames
+
+    def adopt(self, scene_name, info, folder):
+        """Use a kept cache found when a file is opened (see find_kept_cache)."""
+        try:
+            kept = disk.FolderLock(folder)
+        except OSError:
+            return False
+        frames = disk.frames_in(folder, info["width"] * info["height"] * 4)
+        if not frames:
+            kept.release()
+            return False
+        self.clear(delete=False)
+        try:
+            self._start_threads()
+            info["session"] = disk.SESSION_ID
+            info["last_used"] = time.time()
+            disk.write_info(folder, info)
+        except OSError:
+            pass
+        with self.lock:
+            self.key = _tupled(info["key"])
+            self.scene_name = scene_name
+            self.width = info["width"]
+            self.height = info["height"]
+            self.mode = info.get("mode", 'CAMERA')
+            self.folder = folder
+            self._kept = kept
+            self.disk = frames
+        self._measure_others()
+        return True
+
+    def saved(self, scene_name, tag_fields, mtime):
+        """The .blend was saved: if this cache shows the saved state, note the file's new date
+        (and its new path after Save As) so the next session finds it."""
+        with self.lock:
+            kept = self._kept
+            folder = self.folder
+        if kept is None or self.scene_name != scene_name:
+            return
+        info = disk.read_info(folder)
+        if info is None or info.get("edit_id") != tag_fields["edit_id"]:
+            return
+        info.update(tag_fields, blend_mtime=mtime, last_used=time.time())
+        try:
+            disk.write_info(folder, info)
+        except OSError:
+            pass
 
     def _ensure_session(self):
         session = self._session
@@ -169,14 +267,17 @@ class FrameCache:
             if session is not None:
                 self._jobs.put(("close", session))
             session = self._session = disk.Session(self.base_dir)
-            for path in session.abandoned():
+            for path in session.abandoned() + disk.leftover_trash(self.base_dir):
                 self._jobs.put(("delete", path))
         self._start_threads()
         return session
 
-    def clear(self):
+    def clear(self, delete=True):
+        """Forget the frames. delete=False leaves a kept folder on disk (an edit made it out of
+        date, but reopening the saved file may want it again); session folders always go."""
         with self.lock:
             old_folder = self.folder
+            kept, self._kept = self._kept, None
             self.key = None
             self.folder = None
             self.ram.clear()
@@ -187,12 +288,65 @@ class FrameCache:
             self.generation += 1
             self.disk_error = ""
             self.full_reason = ""
-        if old_folder:
+        if kept is not None:
+            kept.release()
+            if delete:
+                self._trash(old_folder)
+        elif old_folder:
             self._jobs.put(("delete", old_folder))
 
+    def _trash(self, folder):
+        """Delete a kept folder: renamed at once so nothing finds it, removed by the writer."""
+        try:
+            trash = disk.to_trash(folder)
+        except OSError:
+            return
+        self._jobs.put(("delete", trash))
+        self._start_threads()
+
+    def clear_all(self):
+        """Delete this cache and every kept cache not in use by another Blender."""
+        self.clear(delete=True)
+        if not self.base_dir:
+            return
+        for folder, _info in disk.kept_caches(self.base_dir):
+            if not disk.in_use(folder):
+                self._trash(folder)
+
+    def kept_usage(self):
+        """(number of kept caches, bytes) in the cache folder, this one included."""
+        if not self.base_dir:
+            return 0, 0
+        caches = disk.kept_caches(self.base_dir)
+        return len(caches), sum(disk.folder_bytes(folder) for folder, _info in caches)
+
+    def _measure_others(self):
+        """Bytes used by the other kept caches, for the disk limit."""
+        own = self.folder
+        self._others = [(info.get("last_used", 0), folder, disk.folder_bytes(folder))
+                        for folder, info in disk.kept_caches(self.base_dir) if folder != own]
+        self._others_bytes = sum(size for _used, _folder, size in self._others)
+
+    def _evict_others(self, needed):
+        """Delete the least recently used other kept caches until needed more bytes fit.
+        Returns True when something was deleted."""
+        own = (len(self.disk) + len(self.pending)) * self.frame_bytes
+        freed = False
+        for entry in sorted(self._others):
+            if own + self._others_bytes + needed <= self.disk_limit:
+                break
+            _used, folder, size = entry
+            if disk.in_use(folder):
+                continue
+            self._trash(folder)
+            self._others.remove(entry)
+            self._others_bytes -= size
+            freed = True
+        return freed
+
     def shutdown(self):
-        """Stop the threads and delete this session's files."""
-        self.clear()
+        """Stop the threads and delete this session's files; kept caches stay on disk."""
+        self.clear(delete=False)
         if self._session is not None:
             self._jobs.put(("close", self._session))
             self._session = None
@@ -223,16 +377,27 @@ class FrameCache:
 
     def has_room(self, frame=None):
         with self.lock:
+            if self._room_locked(frame):
+                return True
+            if not self._over_disk_limit:
+                return False
+        # Make room by deleting the least recently used other kept caches, then check again.
+        if not self._evict_others(self.frame_bytes):
+            return False
+        with self.lock:
             return self._room_locked(frame)
 
     def _room_locked(self, frame):
+        self._over_disk_limit = False
         if self.folder is not None:
             if self.disk_error:
                 self.full_reason = self.disk_error
                 return False
             if frame in self.disk or frame in self.pending:
                 return True
-            if (len(self.disk) + len(self.pending) + 1) * self.frame_bytes > self.disk_limit:
+            own = (len(self.disk) + len(self.pending) + 1) * self.frame_bytes
+            if own + self._others_bytes > self.disk_limit:
+                self._over_disk_limit = self._others_bytes > 0
                 self.full_reason = "Disk limit reached"
                 return False
             return True
@@ -243,9 +408,9 @@ class FrameCache:
 
     def put(self, frame, array):
         """Store packed pixels (see pack_pixels) for frame. Returns False when there is no room."""
+        if not self.has_room(frame):
+            return False
         with self.lock:
-            if not self._room_locked(frame):
-                return False
             self.ram.pop(frame, None)
             self.ram[frame] = array
             if self.folder is not None and frame not in self.disk:
@@ -374,6 +539,133 @@ class FrameCache:
 frame_cache = FrameCache()
 
 
+# Kept caches ("name tags")
+# -------------------------
+# A cache of a saved .blend is kept on disk under a tag made of everything that decides the
+# pictures: the file, scene, view settings (the capture key), an edit id saved in the file
+# (a new random id on every edit, so two different edit histories never share an id), the
+# dates of linked files and images, and the Blender version. Reopening the file finds the
+# folder again only if the .blend on disk is the one those pictures were made from: its
+# date must match the date noted when it was loaded or saved in that state. A file changed
+# elsewhere (for example in a Blender without Cache Play) gets a new date, so it re-caches.
+
+# The .blend as it is on disk: its path, date, and each scene's edit id at load / save.
+_disk_state = {"path": "", "mtime": None, "edit_ids": {}}
+
+
+def _blend_path():
+    path = bpy.data.filepath
+    return os.path.normcase(os.path.abspath(path)) if path else ""
+
+
+def _tupled(value):
+    """JSON lists back to the tuples a capture key is made of."""
+    return tuple(_tupled(v) for v in value) if isinstance(value, list) else value
+
+
+def _mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return None
+
+
+def _deps_signature():
+    """[path, date] of every file the pictures may show: linked libraries, images, caches."""
+    files = set()
+    for lib in bpy.data.libraries:
+        files.add(bpy.path.abspath(lib.filepath, library=lib.library))
+    for image in bpy.data.images:
+        if image.source in {'FILE', 'SEQUENCE', 'MOVIE', 'TILED'} and image.filepath and not image.packed_file:
+            files.add(bpy.path.abspath(image.filepath, library=image.library))
+    for group in (bpy.data.cache_files, bpy.data.volumes):
+        for item in group:
+            if item.filepath and not getattr(item, "packed_file", None):
+                files.add(bpy.path.abspath(item.filepath, library=item.library))
+    return [[os.path.normcase(os.path.abspath(path)), _mtime(path)] for path in sorted(files)]
+
+
+def _tag_fields(scene_name, key=None):
+    scene = bpy.data.scenes.get(scene_name)
+    fields = {
+        "format": disk.FORMAT, "path": _blend_path(), "scene": scene_name,
+        "edit_id": scene.cache_play.edit_id if scene else "",
+        "deps": _deps_signature(), "blender": bpy.app.version_string,
+    }
+    if key is not None:
+        fields["key"] = key
+    return json.loads(json.dumps(fields, default=repr))  # exactly as info.json reads back
+
+
+def persist_tag(scene_name, key):
+    """The name tag of a cache, or None for an unsaved file (it gets a session folder)."""
+    path = _blend_path()
+    if not path or bpy.data.scenes.get(scene_name) is None:
+        return None
+    fields = _tag_fields(scene_name, key)
+    tag_id = hashlib.sha1(json.dumps(fields, sort_keys=True).encode()).hexdigest()[:20]
+    disk_mtime = _disk_state["mtime"] if _disk_state["path"] == path else None
+    at_disk = disk_mtime is not None and _disk_state["edit_ids"].get(scene_name) == fields["edit_id"]
+    return {"id": tag_id, **fields, "disk_mtime": disk_mtime, "at_disk_state": at_disk}
+
+
+def _note_disk_state():
+    """Remember the .blend as it is on disk right now (just loaded or saved)."""
+    path = _blend_path()
+    _disk_state["path"] = path
+    _disk_state["mtime"] = _mtime(bpy.data.filepath) if path else None
+    _disk_state["edit_ids"] = {s.name: s.cache_play.edit_id for s in bpy.data.scenes}
+
+
+def adopt_kept_cache():
+    """Just after a file opens: pick up the kept cache made from this exact saved state."""
+    from .ui import configure_cache  # ui imports this module
+    # Without a previous frame on record, the first edit would look like a frame change.
+    for scene in bpy.data.scenes:
+        _last_frame.setdefault(scene.name, _frame_of(scene))
+    configure_cache()
+    cache = frame_cache
+    if not (cache.use_disk and cache.base_dir and _disk_state["mtime"]) or cache.key is not None:
+        return None
+    windows = bpy.context.window_manager.windows
+    scene = windows[0].scene if windows else bpy.context.scene
+    fields = _tag_fields(scene.name)
+    best = None
+    for folder, info in disk.kept_caches(cache.base_dir):
+        if (all(info.get(name) == value for name, value in fields.items())
+                and info.get("blend_mtime") == _disk_state["mtime"] and not disk.in_use(folder)
+                and (best is None or info.get("last_used", 0) > best[1].get("last_used", 0))):
+            best = (folder, info)
+    if best is not None and cache.adopt(scene.name, best[1], best[0]):
+        tag_time_editors()
+    return None
+
+
+@persistent
+def _on_load_post(*_args):
+    _note_disk_state()
+    # Once the file's windows are up.
+    bpy.app.timers.register(adopt_kept_cache, first_interval=0.1)
+
+
+@persistent
+def _on_save_post(*_args):
+    _note_disk_state()
+    scene_name = frame_cache.scene_name
+    if scene_name and bpy.data.scenes.get(scene_name) is not None:
+        fields = _tag_fields(scene_name)
+        frame_cache.saved(scene_name, {k: fields[k] for k in ("path", "edit_id", "deps")},
+                          _disk_state["mtime"])
+
+
+def _startup():
+    """When the add-on is turned on with a file already open."""
+    if bpy.data.filepath and not bpy.data.is_dirty:
+        _note_disk_state()
+    adopt_kept_cache()
+    return None
+
+
 TIME_EDITORS = {'DOPESHEET_EDITOR', 'GRAPH_EDITOR', 'NLA_EDITOR'}  # Timeline is a Dope Sheet mode
 
 
@@ -444,32 +736,38 @@ def _is_visibility_resync(depsgraph):
     return len(flagged) > 1 and visible <= flagged
 
 
-@persistent
-def _on_depsgraph_update(scene, depsgraph):
-    frame = _frame_of(scene)
-    frame_moved = _last_frame.get(scene.name) != frame
-    _last_frame[scene.name] = frame
-    windows_changed = _windows_changed()
-    if frame_moved or windows_changed or time.perf_counter() < _quiet_until:
-        return
-    if frame_cache.key is None or scene.name != frame_cache.scene_name or player.state.busy():
-        return
-    if _is_visibility_resync(depsgraph):
-        return
+def _is_edit(depsgraph):
     for update in depsgraph.updates:
         id_data = update.id
         if isinstance(id_data, _SKIP_TYPES):
             continue
         changed = update.is_updated_geometry or update.is_updated_transform or update.is_updated_shading
         if changed or not isinstance(id_data, _FLAG_ONLY_TYPES):
-            frame_cache.clear()
-            tag_time_editors()
-            return
+            return True
+    return False
+
+
+@persistent
+def _on_depsgraph_update(scene, depsgraph):
+    frame = _frame_of(scene)
+    frame_moved = _last_frame.get(scene.name) != frame
+    _last_frame[scene.name] = frame
+    windows_changed = _windows_changed()
+    if frame_moved or windows_changed or time.perf_counter() < _quiet_until or player.state.busy():
+        return
+    if not _is_edit(depsgraph) or _is_visibility_resync(depsgraph):
+        return
+    # Every edit gets a new id, saved with the file, even with nothing cached: kept caches
+    # of the old state then never match this one.
+    scene.cache_play.edit_id = uuid.uuid4().hex
+    if frame_cache.key is not None and scene.name == frame_cache.scene_name:
+        frame_cache.clear(delete=False)
+        tag_time_editors()
 
 
 @persistent
 def _on_load_pre(*_args):
-    frame_cache.clear()
+    frame_cache.clear(delete=False)
     player.state.reset()
 
 
@@ -477,15 +775,21 @@ _HANDLERS = (
     ("depsgraph_update_post", _on_depsgraph_update),
     ("frame_change_post", _on_frame_change),
     ("load_pre", _on_load_pre),
+    ("load_post", _on_load_post),
+    ("save_post", _on_save_post),
 )
 
 
 def register():
     for name, func in _HANDLERS:
         getattr(bpy.app.handlers, name).append(func)
+    bpy.app.timers.register(_startup, first_interval=0.1)
 
 
 def unregister():
+    for func in (_startup, adopt_kept_cache):
+        if bpy.app.timers.is_registered(func):
+            bpy.app.timers.unregister(func)
     for name, func in _HANDLERS:
         handlers = getattr(bpy.app.handlers, name)
         if func in handlers:

@@ -23,6 +23,7 @@ _PASS_KEYS = {
 }
 
 _PLAY_HINT = "Cache Play   ·   Space: pause / resume   ·   ← →: step   ·   Esc or click: stop"
+_SPACE_PLAY_HINT = "Cache Play   ·   Space, Esc or click: stop   ·   ← →: step"
 _CACHE_MODE_HINT = (
     "Cache Mode   ·   Drag in Timeline: move cache playhead   ·   Space: play / pause   ·   "
     "← →: step   ·   Shift ← →: first / last   ·   Esc: exit"
@@ -74,6 +75,12 @@ class CACHEPLAY_OT_preview(bpy.types.Operator):
         default=False,
         options={'SKIP_SAVE'},
     )
+    space_toggle: BoolProperty(
+        name="Started with Space",
+        description="Space stops caching and playback instead of pausing (the Spacebar preference)",
+        default=False,
+        options={'SKIP_SAVE', 'HIDDEN'},
+    )
     cache_mode: BoolProperty(
         name="Cache Mode",
         description="After filling, stay paused for scrubbing instead of playing",
@@ -116,9 +123,13 @@ class CACHEPLAY_OT_preview(bpy.types.Operator):
         # Fast GPU Caching: the graphics card packs the pixels and works while the next
         # frame is evaluated (see _fill_step). Off: the plain, one-step-at-a-time way.
         self._overlap = get_prefs(context).fast_caching
-        self._capturer = capture.Capturer(scene, context.view_layer, region, space, settings.preview_size,
-                                          gpu_pack=self._overlap)
+        self._capture_args = (scene, context.view_layer, region, space, settings.preview_size)
+        self._capturer = capture.Capturer(*self._capture_args, gpu_pack=self._overlap)
         cap = self._capturer
+        # Cache & Play plays what is cached right away and caches each missing stretch when
+        # playback reaches it, like After Effects. Off once the cache is full.
+        self._play_through = not (self.fill_only or self.cache_mode)
+        self._fill_gaps = self._play_through
         cache = store.frame_cache
         configure_cache(context)
 
@@ -138,10 +149,21 @@ class CACHEPLAY_OT_preview(bpy.types.Operator):
             self._todo = []
         else:
             cache.prepare(cap.key, scene.name, cap.width, cap.height, cap.mode, area.as_pointer())
-            self._todo = [f for f in self._range if not cache.has(f)]
+            current = scene.frame_current
+            if self._play_through:
+                # Only the missing stretch at the playhead; later ones when playback gets there.
+                self._gap_index = self._start_index(current)
+                self._todo = self._gap_at(self._gap_index)
+            else:
+                # Like After Effects: start caching at the playhead, run to the end of the
+                # range, then do the frames before it. Esc keeps the frames you see first.
+                missing = [f for f in self._range if not cache.has(f)]
+                self._todo = [f for f in missing if f >= current] + [f for f in missing if f < current]
         self._total = len(self._todo)
         self._done = 0
         self._drawn = None  # frame drawn but not yet read back (see _fill_step)
+        self._last_stored = None  # last frame cached by this run
+        self._stopped_fill = False  # caching was stopped with Esc / Space
         self._full = ""
         self._area = area
         self._orig_frame = scene.frame_current
@@ -154,6 +176,7 @@ class CACHEPLAY_OT_preview(bpy.types.Operator):
         if self._todo and not cache.has_room(self._todo[0]):
             self._full = cache.full_reason
             self._todo = []
+            self._fill_gaps = False
         if not self._todo:
             self._free_capturer()
             if self.fill_only:
@@ -172,6 +195,24 @@ class CACHEPLAY_OT_preview(bpy.types.Operator):
             self._finish(context)
             return {'CANCELLED'}
         return {'RUNNING_MODAL'}
+
+    def _start_index(self, frame):
+        """Where Cache & Play starts in the range: at the playhead, or at the start when the
+        playhead is on the last frame or outside the range."""
+        frames = self._range
+        if frame not in frames or frame == frames[-1]:
+            return 0
+        return frames.index(frame)
+
+    def _gap_at(self, index):
+        """The uncached frames from self._range[index] up to the next cached frame or the end."""
+        cache = store.frame_cache
+        gap = []
+        for frame in self._range[index:]:
+            if cache.has(frame):
+                break
+            gap.append(frame)
+        return gap
 
     def modal(self, context, event):
         state = player.state
@@ -208,12 +249,21 @@ class CACHEPLAY_OT_preview(bpy.types.Operator):
     def _begin_fill(self, context):
         player.state.filling = True
         context.window_manager.progress_begin(0, self._total)
-        self._area.header_text_set(f"Cache Play: caching {self._total} frames   ·   Esc to stop")
+        self._area.header_text_set(f"Cache Play: caching {self._total} frames   ·   {self._stop_keys()} to stop")
+
+    def _stop_keys(self):
+        return "Space or Esc" if self.space_toggle else "Esc"
 
     def _modal_fill(self, context, event):
-        if event.type == 'ESC' and event.value == 'PRESS':
+        space_stop = (self.space_toggle and event.type == 'SPACE' and event.value == 'PRESS'
+                      and not event.is_repeat)
+        if (event.type == 'ESC' and event.value == 'PRESS') or space_stop:
             self._collect()  # the frame already drawn is kept
-            self._end_fill(context)
+            self._stopped_fill = True
+            # Blender's playhead stays on the last frame cached (Cache Mode never moves it).
+            stay = (self._last_stored is not None and not self.cache_mode
+                    and get_prefs(context).jump_on_stop)
+            self._end_fill(context, self._last_stored if stay else self._orig_frame)
             self.report({'INFO'}, f"Caching stopped, {self._done} frames cached")
             if self.cache_mode and self._begin_play(context):
                 return {'RUNNING_MODAL'}  # review what was cached so far
@@ -224,15 +274,19 @@ class CACHEPLAY_OT_preview(bpy.types.Operator):
                 done = self._fill_step(context)
             except Exception as ex:
                 usage.error(self._feature())
-                self._end_fill(context)
+                self._end_fill(context, self._orig_frame)
                 self._finish(context)
                 self.report({'ERROR'}, f"Cache Play failed while caching: {ex}")
                 return {'CANCELLED'}
             if done:
-                self._end_fill(context)
+                # Cache & Play goes on playing; the scene frame is set when it stops.
+                self._end_fill(context, None if self._play_through else self._orig_frame)
                 if self._full:
+                    self._fill_gaps = False
                     self.report({'WARNING'}, f"{self._full}: cached {self._done} of {self._total} frames")
-                if self.fill_only or not self._begin_play(context):
+                # Cache & Play: play on from the start of the stretch just cached.
+                resume = self._gap_index if self._fill_gaps else None
+                if self.fill_only or not self._begin_play(context, resume):
                     if not self._full:
                         self.report({'INFO'}, f"Cached {self._done} frames")
                     self._finish(context)
@@ -264,7 +318,7 @@ class CACHEPLAY_OT_preview(bpy.types.Operator):
             self._collect()
         context.window_manager.progress_update(self._done)
         self._area.header_text_set(
-            f"Cache Play: cached {self._done} of {self._total} frames   ·   Esc to stop"
+            f"Cache Play: cached {self._done} of {self._total} frames   ·   {self._stop_keys()} to stop"
         )
         store.tag_time_editors()
         return not self._todo
@@ -280,15 +334,47 @@ class CACHEPLAY_OT_preview(bpy.types.Operator):
             self._todo = []
             return False
         self._done += 1
+        self._last_stored = frame
         return True
 
-    def _end_fill(self, context):
+    def _end_fill(self, context, frame):
+        """Caching is over; move the scene to frame (None: leave it where caching left it)."""
         self._free_capturer()
         context.window_manager.progress_end()
         self._area.header_text_set(None)
-        context.scene.frame_set(self._orig_frame)
+        if frame is not None and frame != context.scene.frame_current:
+            context.scene.frame_set(frame)
         player.state.filling = False
         player.state.suppress(0.5)
+
+    def _fill_gap(self, context, index):
+        """Cache & Play reached an uncached frame: cache the missing stretch from there.
+
+        The cached picture is hidden meanwhile, so the viewport shows the frames as they
+        are calculated; playback resumes at index afterwards.
+        """
+        state = player.state
+        state.stop()
+        store.frame_cache.set_want(())
+        context.workspace.status_text_set(None)
+        self._gap_index = index
+        cache = store.frame_cache
+        self._capturer = capture.Capturer(*self._capture_args, gpu_pack=self._overlap)
+        cap = self._capturer
+        # Same key unless a setting changed meanwhile; then the old pictures go.
+        cache.prepare(cap.key, context.scene.name, cap.width, cap.height, cap.mode, self._area.as_pointer())
+        self._generation = cache.generation
+        self._todo = self._gap_at(index)
+        if not self._todo or not cache.has_room(self._todo[0]):
+            self._free_capturer()
+            self._full = cache.full_reason
+            self._fill_gaps = False
+            return self._begin_play(context)
+        self._total = len(self._todo)
+        self._done = 0
+        self._drawn = None
+        self._begin_fill(context)
+        return True
 
     def _free_capturer(self):
         capturer = getattr(self, "_capturer", None)
@@ -298,8 +384,24 @@ class CACHEPLAY_OT_preview(bpy.types.Operator):
 
     # Playing ----------------------------------------------------------------
 
-    def _begin_play(self, context):
+    def _begin_play(self, context, index=None):
+        """Start playing (Cache Mode: reviewing). index: where in the range Cache & Play
+        starts; by default at Blender's playhead."""
         cache = store.frame_cache
+        if self._fill_gaps:
+            # The whole range: a frame that is not cached yet is cached when playback gets there.
+            scene = context.scene
+            start = self._start_index(scene.frame_current) if index is None else index
+            self._late_reads = cache.sync_reads
+            self._generation = cache.generation
+            self._added = cache.added
+            player.state.start(self._area.as_pointer(), list(self._range),
+                               scene.render.fps / scene.render.fps_base, start, time.perf_counter())
+            context.workspace.status_text_set(_SPACE_PLAY_HINT if self.space_toggle else _PLAY_HINT)
+            if not cache.has(self._range[start]):
+                return self._fill_gap(context, start)
+            self._redraw(context)
+            return True
         frames = [f for f in self._range if cache.has(f)]
         if not frames:
             self.report({'WARNING'}, "Nothing cached to play")
@@ -321,7 +423,7 @@ class CACHEPLAY_OT_preview(bpy.types.Operator):
             if start == len(frames) - 1:
                 start = 0
             player.state.start(self._area.as_pointer(), frames, fps, start, time.perf_counter())
-            context.workspace.status_text_set(_PLAY_HINT)
+            context.workspace.status_text_set(_SPACE_PLAY_HINT if self.space_toggle else _PLAY_HINT)
         self._redraw(context)
         return True
 
@@ -414,7 +516,14 @@ class CACHEPLAY_OT_preview(bpy.types.Operator):
         state = player.state
         now = time.perf_counter()
         if event.type == 'TIMER':
-            if not state.advance(now, context.scene.cache_play.loop):
+            before = state.index
+            playing = state.advance(now, context.scene.cache_play.loop)
+            if self._fill_gaps:
+                gap = self._next_gap(before, state.index if playing else len(state.frames) - 1)
+                if gap is not None:
+                    self._fill_gap(context, gap)
+                    return {'PASS_THROUGH'}
+            if not playing:
                 self._finish(context)
                 return {'FINISHED'}
             if state.dirty:
@@ -422,8 +531,16 @@ class CACHEPLAY_OT_preview(bpy.types.Operator):
             return {'PASS_THROUGH'}
         if event.value != 'PRESS' or event.type in _PASS_KEYS:
             return {'PASS_THROUGH'}
+        if event.type == 'SPACE' and self.space_toggle:
+            if event.is_repeat:
+                return {'RUNNING_MODAL'}
+            self._finish(context)  # started with Space: Space stops, like Blender's playback
+            return {'FINISHED'}
         if event.type == 'SPACE':
             state.set_paused(not state.paused, now)
+            if self._fill_gaps and not state.paused and not store.frame_cache.has(state.frame):
+                self._fill_gap(context, state.index)  # resumed on a frame stepped to but not cached
+                return {'RUNNING_MODAL'}
             self._redraw(context)
             return {'RUNNING_MODAL'}
         if event.type in {'LEFT_ARROW', 'RIGHT_ARROW'}:
@@ -434,6 +551,17 @@ class CACHEPLAY_OT_preview(bpy.types.Operator):
         # so a click on a button only stops and does not also press the button.
         self._finish(context)
         return {'FINISHED'}
+
+    def _next_gap(self, before, after):
+        """Index of the first uncached frame playback passed between two ticks, or None."""
+        frames = player.state.frames
+        count = len(frames)
+        cache = store.frame_cache
+        for step in range(1, (after - before) % count + 1):
+            index = (before + step) % count
+            if not cache.has(frames[index]):
+                return index
+        return None
 
     def _redraw(self, context):
         state = player.state
@@ -480,6 +608,9 @@ class CACHEPLAY_OT_preview(bpy.types.Operator):
             if state.last_summary is not None:
                 state.last_summary["late_reads"] = cache.sync_reads - self._late_reads
         scene = context.scene
+        if jump_to is None and not self._stopped_fill:
+            # Caching on the way may have moved the scene: back to where it was.
+            jump_to = self._orig_frame
         if jump_to is not None and jump_to != scene.frame_current:
             state.suppress(0.5)
             scene.frame_set(jump_to)
@@ -516,6 +647,29 @@ class CACHEPLAY_OT_clear(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class CACHEPLAY_OT_clear_all(bpy.types.Operator):
+    bl_idname = "cacheplay.clear_all"
+    bl_label = "Clear All Caches"
+    bl_description = (
+        "Delete every kept cache in the cache folder, for all files (not ones another open "
+        "Blender is using)"
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return not (player.state.active or player.state.filling)
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(self, event)
+
+    def execute(self, context):
+        configure_cache(context)
+        store.frame_cache.clear_all()
+        display.display.reset()
+        store.tag_time_editors()
+        return {'FINISHED'}
+
+
 class CACHEPLAY_OT_cache_mode(bpy.types.Operator):
     bl_idname = "cacheplay.cache_mode"
     bl_label = "Cache Mode"
@@ -543,6 +697,33 @@ class CACHEPLAY_OT_cache_mode(bpy.types.Operator):
         return self.invoke(context, None)
 
 
+class CACHEPLAY_OT_space_play(bpy.types.Operator):
+    """Spacebar runs Cache & Play instead of Blender's playback (preference, Quarter size only).
+
+    Bound to Space in the Frames keymap, next to Blender's own Play. When poll() fails the
+    key falls through to Blender's Play, so Space works as usual in every other case.
+    """
+    bl_idname = "cacheplay.space_play"
+    bl_label = "Cache & Play (Spacebar)"
+    bl_description = "Cache & Play at Quarter size; Blender's normal playback otherwise"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        scene = context.scene
+        state = player.state
+        return (get_prefs(context).space_plays_cache
+                and scene is not None and scene.camera is not None
+                and scene.cache_play.preview_size == 'QUARTER'
+                and not (state.active or state.filling)
+                and not (context.screen and context.screen.is_animation_playing)
+                and capture.find_view3d(context) is not None)
+
+    def invoke(self, context, event):
+        started = bpy.ops.cacheplay.preview('INVOKE_DEFAULT', space_toggle=True)
+        return {'FINISHED'} if started & {'RUNNING_MODAL', 'FINISHED'} else {'CANCELLED'}
+
+
 class CACHEPLAY_OT_settings(bpy.types.Operator):
     bl_idname = "cacheplay.settings"
     bl_label = "Cache Play Settings"
@@ -568,7 +749,8 @@ class CACHEPLAY_OT_settings(bpy.types.Operator):
         return {'FINISHED'}
 
 
-classes = (CACHEPLAY_OT_preview, CACHEPLAY_OT_clear, CACHEPLAY_OT_cache_mode, CACHEPLAY_OT_settings)
+classes = (CACHEPLAY_OT_preview, CACHEPLAY_OT_clear, CACHEPLAY_OT_clear_all, CACHEPLAY_OT_cache_mode, CACHEPLAY_OT_space_play,
+           CACHEPLAY_OT_settings)
 
 # Default shortcuts. Blender 5.1/5.2's default keymap leaves F5-F8 free, also with Ctrl, Alt
 # or Ctrl+Shift (only Shift+F5-F8 are taken, for switching editors). They live in the Window
@@ -604,6 +786,10 @@ def register():
         keymap = keyconfig.keymaps.new(name="Window", space_type='EMPTY')
         for idname, key, modifiers in SHORTCUTS:
             _keymap_items.append((keymap, keymap.keymap_items.new(idname, key, 'PRESS', **modifiers)))
+        # Space sits in the Frames keymap with Blender's own Play; ours is checked first and
+        # steps aside (poll fails) unless the Spacebar preference is on and the size is Quarter.
+        frames = keyconfig.keymaps.new(name="Frames", space_type='EMPTY')
+        _keymap_items.append((frames, frames.keymap_items.new(CACHEPLAY_OT_space_play.bl_idname, 'SPACE', 'PRESS')))
 
 
 def unregister():

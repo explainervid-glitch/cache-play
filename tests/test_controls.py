@@ -157,7 +157,7 @@ def s_fill_cancel():
     bpy.ops.cacheplay.clear()
     scene = bpy.context.scene
     scene.frame_end = 400
-    scene.frame_set(7)
+    scene.frame_set(200)
     start(fill_only=True)
 
 
@@ -169,7 +169,11 @@ def s_fill_esc():
 def s_check_fill_cancel():
     n = store.frame_cache.stats()["frames"]
     check("esc stops caching, keeps frames done", not player.state.filling and 0 < n < 400, n)
-    check("frame restored after caching", bpy.context.scene.frame_current == 7, bpy.context.scene.frame_current)
+    cached = sorted(store.frame_cache.snapshot()[1])
+    check("caching starts at the playhead", cached and cached[0] == 200 and cached == list(range(200, 200 + n)),
+          cached[:3] + ["…"] + cached[-2:])
+    check("playhead stays on the last cached frame after Esc", bpy.context.scene.frame_current == cached[-1],
+          {"scene": bpy.context.scene.frame_current, "last_cached": cached[-1]})
 
 
 def s_view_change():
